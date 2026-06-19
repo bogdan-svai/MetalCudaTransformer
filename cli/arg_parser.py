@@ -39,4 +39,11 @@ def build_parser():
         action="store_true",
         help="Emit parser diagnostics in human-readable mode",
     )
+    build.add_argument(
+        "--coarsening",
+        type=int,
+        choices=[1, 2, 4, 8],
+        default=None,
+        help="Logical CUDA X-axis threads processed by each physical Metal thread",
+    )
     return parser

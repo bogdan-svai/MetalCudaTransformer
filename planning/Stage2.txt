@@ -10,9 +10,9 @@ Additionally, this stage establishes the runtime connection layer by generating 
 ## 2. SYSTEM ARCHITECTURE & PIPELINE EXPANSION
 Stage 2 introduces the `build` pipeline orchestrator. It expands the structural workflow by ingesting the serialized abstract syntax tree (AST) layout metadata and emitting both code and routing signatures inside the sandboxed container:
 
-  [Stage 1 Validated AST] ---> core/transpiler.py ---> 1. Dynamic Code Mutator (.metal)
-                                                  ---> 2. Routing Serializer (routing_table.txt)
-                                                  ---> Encapsulated inside [mcu_artifacts.zip]
+  [Stage 1 Validated Metadata] ---> core/transpiler.py ---> generated.metal
+                                                        ---> routing_table.txt
+                                                        ---> mcu_artifacts.zip
 
 ### 2.1 Component Extensions:
 * core/transpiler.py: The compilation engine. Responsible for signature mapping, address space conversion, and implicit hardware variable translation.
@@ -23,7 +23,7 @@ Stage 2 introduces the `build` pipeline orchestrator. It expands the structural 
 ### 3.1 CLI Build Execution Target
 * REQ-2.1.1: Unified Build Pipeline Routing
   The main orchestration binary must accept the `build` subcommand: `./mcu build <path_to_source_file>`. 
-  Execution matrix policy: The orchestrator must run the `SanityChecker` engine over the target file first. If any critical error is raised, compilation must abort instantly with Exit Code 1, suppressing the code generation phase.
+  The orchestrator must run Stage 1 policies first. Critical errors must abort code generation with Exit Code 1, except for Stage 3 hardware-limit errors that are explicitly resolved by a valid coarsening plan.
 
 ### 3.2 MSL Translation & Syntax Mutation (Source-to-Source)
 * REQ-2.2.1: Address Space Qualifier Translation
@@ -66,10 +66,13 @@ Stage 2 introduces the `build` pipeline orchestrator. It expands the structural 
 }
 ```
 
-4. INTEGRATION VERIFICATION & REPAIR LOGIC (TESTING)
-4.1 Automated Transpilation Integration Matrix
-The unit testing infrastructure inside /tests must scale to validate translation rules using cross-analysis frameworks:
+## 4. INTEGRATION VERIFICATION & REPAIR LOGIC
 
-test_msl_syntax_generation.py: Compares mutated function strings against reference token configurations, checking for correct address block allocations ([[buffer(N)]]).
+### 4.1 Automated Transpilation Integration Matrix
+The tests in `tests/test_stage2_build.py` must validate:
 
-test_routing_table_schema.py: Asserts that routing_table.txt is correctly compressed inside mcu_artifacts.zip, and programmatically verifies that memory layouts match the exact argument mapping required by the host application.
+* sequential `[[buffer(N)]]` allocations and address spaces;
+* CUDA coordinate and barrier mutation;
+* routing-table schema and ZIP contents;
+* build abortion when Stage 1 produces an unrecoverable error;
+* native compilation of representative generated MSL through `xcrun metal` on macOS.

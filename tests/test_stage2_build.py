@@ -105,7 +105,7 @@ def test_build_aborts_on_stage1_error_without_codegen(tmp_path):
             values[threadIdx.x] = 1.0f;
         }
         void host() {
-            cudaLaunch(bad, 1, dim3(64, 32), 0);
+            cudaLaunch(bad, 1, dim3(1, 2048), 0);
         }
         """,
     )

@@ -61,11 +61,11 @@
 
 ## 3.2 Functional Requirements
 * REQ-3.1.1: Coarsening Factor Parameterization
-  The CLI must accept an optional configuration flag (--coarsening [1|2|4]) specifying how many logical CUDA threads are packed into a single physical Metal thread.
+  The CLI must accept an optional configuration flag (`--coarsening [1|2|4|8]`) specifying how many logical CUDA X-axis threads are packed into one physical Metal thread. When omitted, build may automatically select 2, 4, or 8 to recover a statically known block above 1024 threads.
 * REQ-3.1.2: Grid Geometry Rescaling
-  When the coarsening factor is greater than 1, the launch orchestrator within the C++ runtime layer must automatically rescale the physical grid dimensions dispatched to the Metal API, dividing the chosen execution axis size by the coarsening factor.
+  When the factor is greater than 1, the launch orchestrator must preserve the threadgroup count and divide the physical X dimension of `threads_per_threadgroup` by the factor. The original X dimension must be exactly divisible by the selected factor.
 * REQ-3.1.3: Instruction Multiplicity (Loop Unrolling)
-  The code generation engine must duplicate math sequences inside the kernel block using additive coordinate offsets (e.g., id * factor + offset). This allows a single thread to process multiple data points, maximizing register reuse in unified memory.
+  The code generator must wrap the kernel body in a fixed-factor loop and reconstruct logical `threadIdx` and `blockDim` values for every iteration, preserving CUDA indexing semantics.
 
 
 # -----------------------------------------------------------------------------

@@ -10,13 +10,14 @@ To maintain a clean working directory and prevent workspace pollution, all parse
 All legacy prototypes, temporary scripts, and unstable research files must be completely quarantined within the `initial_testing/` directory to prevent structural regression and pollution of the production codebase.
 
 ## 2. SYSTEM ARCHITECTURE & COMPONENT TOPOLOGY
-The module must strictly follow a unidirectional pipeline architecture to achieve clean separation of concerns:
+The module must follow a unidirectional pipeline architecture:
 
-  [Source File] ---> CLI Parsing Layer ---> Core AST/Regex Parser ---> Artifact Compression (ZIP) ---> Sanity Policy Engine ---> Diagnostic Dispatcher
+  [Source File] ---> CLI Parsing Layer ---> Core AST/Regex Parser ---> Sanity Policy Engine
+                ---> Diagnostic Dispatcher ---> Artifact Compression (ZIP)
 
 ### 2.1 Component Definitions:
 * cli/arg_parser.py: Standard system argument gatekeeper. Responsible for flag validation and input sanity mapping.
-* core/ast_parser.py: Structural extraction engine leveraging native libclang bindings to construct and walk the compiler AST.
+* core/ast_parser.py: Structural extraction orchestrator. It runs the libclang diagnostic probe and produces normalized metadata through the resilient parser path.
 * core/fallback.py: Preprocessor-resilient lexical scanning backup engine powered by regex matching algorithms.
 * core/sanity.py: The hardware execution boundary layer. Evaluates target parameters against hard-coded Apple Silicon GPU constraints.
 * mcu: Root-level, stateful system orchestrator and main executable entry point.
@@ -29,19 +30,19 @@ The module must strictly follow a unidirectional pipeline architecture to achiev
 * REQ-1.1.2: Standardized JSON Serialization Protocol
   The CLI layer must accept a `--json` parameter flag. When initialized, standard console log emissions must be completely muted, and all program output (metrics, errors, warnings) must be written to `stdout` exclusively as a single, validated JSON string wrapper.
 * REQ-1.1.3: Diagnostics Verbosity Controller
-  The CLI layer must evaluate a `--verbose` flag. If true (and `--json` is false), the system must print explicit token layout properties and Clang cursor indices to `stdout` during parsing execution.
+  The CLI layer must evaluate a `--verbose` flag. If true, parser diagnostics and execution summaries must be included without changing the JSON schema when `--json` is active.
 
 ### 3.2 Metadata Extraction Layer & Containerization
 * REQ-1.2.1: AST Mapping Architecture
-  The `ast_parser.py` module must map explicit `FUNCTION_DECLARATION` kinds containing host/device CUDA modifiers into an internal dictionary structure tracking kernel namespaces, function line numbers, and device geometry definitions.
+  The parser must map host functions, CUDA kernels, source locations, parameters, includes, and launch geometry into a JSON-serializable dictionary. The schema must remain stable regardless of whether libclang or the fallback scanner supplied the information.
 * REQ-1.2.2: Lexical Regex Fallback Shield
-  If `libclang` parsing operations return abstract compilation limits due to unresolvable, hardware-specific NVIDIA macro structures, execution must fall back immediately to `fallback.py`. This module must scan for string occurrences of triple-chevron execution grids (`<<< ... >>>`) to extract layout sizing parameters.
+  If libclang is unavailable or cannot fully parse CUDA-specific structures, execution must continue through `fallback.py`. The fallback must recognize both `cudaLaunch(kernel, grid, block, ...)` and native triple-chevron launches (`kernel<<<grid, block>>>(...)`).
 * REQ-1.2.3: Ephemeral Build Artifact Containerization
   Immediately following syntax evaluation, the root orchestrator must serialize the metadata layout and compress it directly into a root-level archive named `mcu_artifacts.zip`. The internal payload must be written to a virtual path named `ast_output.txt` using DEFLATED byte-stream compression, ensuring zero raw file footprints remain in the user's workspace.
 
 ### 3.3 Semantic Safety Framework (Sanity Policies)
 * REQ-1.3.1: Hardware Limit Boundary Control
-  The policy engine must compute total thread density per compute group ($BlockSize = DimX \times DimY \times DimZ$). If the configuration exceeds the physical Apple Silicon maximum hardware thread group limit of 1024 concurrent execution lanes, the validator must flag a `HardwareLimitExceeded` fatal fault and instantly terminate the build pipeline.
+  The policy engine must compute total thread density per compute group ($BlockSize = DimX \times DimY \times DimZ$). The `check` command must report `HardwareLimitExceeded` when the value is greater than 1024. Starting with Stage 3, `build` may recover only when a documented coarsening plan safely reduces the physical block; otherwise the error remains fatal.
 * REQ-1.3.2: Divergent Thread Squeeze Prevention
   The policy engine must trace logical execution lines inside function bodies. If a local thread execution barrier (`__syncthreads()`) is identified within an active conditional block (`if`, `else`, `switch`) dependent on index coordinates, the system must trigger a `DivergentBarrierWarning`.
 * REQ-1.3.3: External Proprietary Library Gatekeeping
@@ -65,9 +66,7 @@ Standard output logs must leverage explicit ANSI escape formatting keys to highl
 
 ### 5.1 Compressed Data-Driven Integration Testing
 An isolated testing suite powered by `pytest` must validate system output by targeting containerized file pointers inside the `/tests` boundary directory:
-* `test_sanity_limits.py` -> Feeds manual block structures measuring 2048 layout nodes to guarantee consistent validation crashes.
-* `test_library_check.py` -> Feeds arbitrary external header inclusion lines to confirm that unmapped dependencies fail compilation gracefully.
-* `test_structure_verifier.py` -> Accesses `mcu_artifacts.zip` directly at runtime, opening a read-only stream to evaluate that `ast_output.txt` matches the required structural schema contract without extracting the container onto the host disk.
+* `tests/test_stage1_cli.py` must validate hardware limits, unsupported libraries, divergent barriers, invalid paths, JSON output, and the compressed artifact schema.
 
 ### 5.2 GitHub Operations Runner Workflow
 A cloud orchestration execution schema file (`.github/workflows/stage1_test.yml`) must run inside a modern `macos-latest` environment container to check pull requests and repository updates automatically. The routine must initialize dependencies, link base packages, install test utilities, and execute the automated testing suite on clean system clones.

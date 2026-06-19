@@ -6,6 +6,7 @@ from pathlib import Path
 from cli.arg_parser import build_parser
 from core.artifacts import write_artifact
 from core.ast_parser import parse_project
+from core.coarsening import plan_coarsening
 from core.sanity import validate
 from core.transpiler import transpile
 
@@ -46,6 +47,13 @@ def run_build(args):
 
     metadata = parse_project(target, verbose=args.verbose)
     diagnostics = validate(metadata)
+    optimization = plan_coarsening(metadata, requested_factor=args.coarsening)
+    diagnostics.extend(optimization["diagnostics"])
+    if optimization["recovered_hardware_limit"]:
+        diagnostics = [
+            item for item in diagnostics
+            if item["code"] != "HardwareLimitExceeded"
+        ]
     has_errors = any(item["severity"] == "error" for item in diagnostics)
     payload = {
         "ok": not has_errors,
@@ -59,11 +67,15 @@ def run_build(args):
         emit(payload, args.json)
         return 1
 
-    build_output = transpile(metadata)
+    build_output = transpile(metadata, coarsening_plans=optimization["plans"])
     payload["build"] = {
         "metal_file": "generated.metal",
         "routing_table": "routing_table.txt",
         "translated_kernel_count": len(build_output["routing_table"]["translated_kernels"]),
+        "coarsening": {
+            "requested_factor": args.coarsening,
+            "plans": optimization["plans"],
+        },
     }
     write_artifact(payload, extra_files={
         "generated.metal": build_output["metal_source"],
@@ -94,7 +106,11 @@ def emit(payload, as_json):
         return
 
     metadata = payload.get("metadata", {})
-    stage = "Stage 2 build" if payload.get("command") == "build" else "Stage 1 check"
+    stage = "Stage 1 check"
+    if payload.get("command") == "build":
+        plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
+        optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())
+        stage = "Stage 3 optimized build" if optimized else "Stage 2 build"
     print(f"MCU {stage}: {metadata.get('entry', '-')}")
     print(f"Parser: {metadata.get('parser', '-')}")
     print(f"Sources: {len(metadata.get('sources', []))}")
@@ -119,6 +135,13 @@ def emit(payload, as_json):
         if payload.get("build"):
             artifact_contents += ", generated.metal, routing_table.txt"
             print(f"Translated kernels: {payload['build']['translated_kernel_count']}")
+            plans = payload["build"]["coarsening"]["plans"]
+            for kernel, plan in plans.items():
+                if plan["coarsening_factor"] > 1:
+                    print(
+                        f"Coarsening: {kernel} factor={plan['coarsening_factor']} "
+                        f"physical_block={plan['physical_block']} mode={plan['mode']}"
+                    )
         print(f"Artifact: {payload['artifact']} -> {artifact_contents}")
 
 

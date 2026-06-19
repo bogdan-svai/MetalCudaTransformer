@@ -1,4 +1,4 @@
-.PHONY: test check build verify install uninstall
+.PHONY: test check build verify install-hooks install uninstall
 
 test:
 	python -m pytest -q
@@ -10,7 +10,11 @@ build:
 	./mcu build examples/complex_app/app/main.cpp
 
 verify:
-	./scripts/verify_stage2.sh
+	./scripts/verify.sh
+
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-push
 
 install:
 	./scripts/install_mcu.sh

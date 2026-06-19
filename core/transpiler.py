@@ -26,21 +26,27 @@ CUDA_TO_MSL_REPLACEMENTS = {
 }
 
 
-def transpile(metadata):
+def transpile(metadata, coarsening_plans=None):
     kernels = metadata.get("kernels", [])
+    coarsening_plans = coarsening_plans or {}
     metal_functions = []
     translated = {}
 
     for kernel in kernels:
+        optimization = coarsening_plans.get(kernel["name"], default_optimization())
         entry_point = f"{kernel['name']}_msl"
         parameters, bindings = translate_parameters(kernel.get("parameters", []))
         signature_parameters = parameters + GEOMETRY_ARGUMENTS
-        body = mutate_body(kernel.get("body", ""))
+        body = mutate_body(
+            kernel.get("body", ""),
+            coarsening_factor=optimization["coarsening_factor"],
+        )
         metal_functions.append(render_kernel(entry_point, signature_parameters, body))
         translated[kernel["name"]] = {
             "msl_entry_point": entry_point,
             "argument_count": len(bindings),
             "bindings": bindings,
+            "optimization_metrics": optimization,
         }
 
     metal_source = render_metal_source(metal_functions)
@@ -96,11 +102,39 @@ def parse_parameter(parameter):
     }
 
 
-def mutate_body(body):
+def mutate_body(body, coarsening_factor=1):
     mutated = body
-    for cuda_token, metal_token in CUDA_TO_MSL_REPLACEMENTS.items():
+    replacements = dict(CUDA_TO_MSL_REPLACEMENTS)
+    if coarsening_factor > 1:
+        for axis in "xyz":
+            replacements[f"threadIdx.{axis}"] = f"mcu_thread_idx.{axis}"
+            replacements[f"blockDim.{axis}"] = f"mcu_block_dim.{axis}"
+
+    for cuda_token, metal_token in replacements.items():
         mutated = mutated.replace(cuda_token, metal_token)
-    return mutated.rstrip()
+    mutated = mutated.rstrip()
+    if coarsening_factor == 1:
+        return mutated
+    return render_coarsened_body(mutated, coarsening_factor)
+
+
+def render_coarsened_body(body, factor):
+    inner = indent_lines(body, 1)
+    return "\n".join([
+        f"for (uint mcu_step = 0; mcu_step < {factor}; ++mcu_step) {{",
+        "    uint3 mcu_thread_idx = uint3(",
+        "        thread_position_in_threadgroup.x + mcu_step * threads_per_threadgroup.x,",
+        "        thread_position_in_threadgroup.y,",
+        "        thread_position_in_threadgroup.z",
+        "    );",
+        "    uint3 mcu_block_dim = uint3(",
+        f"        threads_per_threadgroup.x * {factor},",
+        "        threads_per_threadgroup.y,",
+        "        threads_per_threadgroup.z",
+        "    );",
+        inner,
+        "}",
+    ])
 
 
 def render_kernel(entry_point, parameters, body):
@@ -121,6 +155,21 @@ def indent_body(body):
         else:
             rendered.append("")
     return "\n" + "\n".join(rendered)
+
+
+def indent_lines(body, levels):
+    prefix = "    " * levels
+    return "\n".join(prefix + line if line.strip() else "" for line in body.splitlines())
+
+
+def default_optimization():
+    return {
+        "mode": "none",
+        "axis": "x",
+        "coarsening_factor": 1,
+        "original_block": None,
+        "physical_block": None,
+    }
 
 
 def render_metal_source(functions):
