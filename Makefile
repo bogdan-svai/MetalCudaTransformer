@@ -1,4 +1,4 @@
-.PHONY: test check install uninstall
+.PHONY: test check build verify install uninstall
 
 test:
 	python -m pytest -q
@@ -8,6 +8,9 @@ check:
 
 build:
 	./mcu build examples/complex_app/app/main.cpp
+
+verify:
+	./scripts/verify_stage2.sh
 
 install:
 	./scripts/install_mcu.sh
