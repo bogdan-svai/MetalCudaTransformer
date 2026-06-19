@@ -6,6 +6,9 @@ test:
 check:
 	./mcu check examples/complex_app/app/main.cpp
 
+build:
+	./mcu build examples/complex_app/app/main.cpp
+
 install:
 	./scripts/install_mcu.sh
 

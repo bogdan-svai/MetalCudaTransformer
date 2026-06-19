@@ -1,0 +1,75 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 2 - TRANSPILATION ENGINE, MSL GENERATION & ROUTING TABLE
+# -----------------------------------------------------------------------------
+
+## 1. MODULE OVERVIEW & ARCHITECTURAL OBJECTIVES
+The primary objective of Stage 2 is to architect the core Source-to-Source (S2S) translation engine capable of converting structurally validated NVIDIA CUDA kernel functions into specification-compliant Apple Metal Shading Language (MSL) source code. 
+
+Additionally, this stage establishes the runtime connection layer by generating a deterministic "Kernel Routing Table". This table serializes argument-to-buffer slot mappings, enabling the downstream C++ host runtime framework (Stage 4) to dynamically bind memory and invoke translated device functions without ahead-of-time binary linking.
+
+## 2. SYSTEM ARCHITECTURE & PIPELINE EXPANSION
+Stage 2 introduces the `build` pipeline orchestrator. It expands the structural workflow by ingesting the serialized abstract syntax tree (AST) layout metadata and emitting both code and routing signatures inside the sandboxed container:
+
+  [Stage 1 Validated AST] ---> core/transpiler.py ---> 1. Dynamic Code Mutator (.metal)
+                                                  ---> 2. Routing Serializer (routing_table.txt)
+                                                  ---> Encapsulated inside [mcu_artifacts.zip]
+
+### 2.1 Component Extensions:
+* core/transpiler.py: The compilation engine. Responsible for signature mapping, address space conversion, and implicit hardware variable translation.
+* mcu (Build Command): Activated execution lane supporting `./mcu build <source_file>`. Automatically triggers Stage 1 checking policies prior to running transpilation.
+
+## 3. DETAILED FUNCTIONAL REQUIREMENTS
+
+### 3.1 CLI Build Execution Target
+* REQ-2.1.1: Unified Build Pipeline Routing
+  The main orchestration binary must accept the `build` subcommand: `./mcu build <path_to_source_file>`. 
+  Execution matrix policy: The orchestrator must run the `SanityChecker` engine over the target file first. If any critical error is raised, compilation must abort instantly with Exit Code 1, suppressing the code generation phase.
+
+### 3.2 MSL Translation & Syntax Mutation (Source-to-Source)
+* REQ-2.2.1: Address Space Qualifier Translation
+  The transpiler must map CUDA-specific memory architecture pointers into native MSL address space qualifiers:
+    * Raw global pointers (e.g., `float* data`) must be translated to `device float* data [[buffer(N)]]`, where N represents a strictly sequential zero-indexed identifier.
+    * Read-only value parameters (e.g., `int width`) must be qualified as constant memory descriptors: `constant int& width [[buffer(M)]]`.
+* REQ-2.2.2: Compute Geometry Attribute Injection
+  The engine must automatically append native Apple Metal execution attribute variables to the trailing end of every kernel argument signature:
+    * `uint3 thread_position_in_grid [[thread_position_in_grid]]`
+    * `uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]`
+    * `uint3 threads_per_threadgroup [[threads_per_threadgroup]]`
+    * `uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]]`
+* REQ-2.2.3: Implicit Coordinate Variable Substitution
+  The internal block scanner must mutate native CUDA hardware position tokens within function bodies into mathematically equivalent statements derived from the injected MSL attributes (REQ-2.2.2):
+    * `threadIdx.x`  --->  `thread_position_in_threadgroup.x`
+    * `blockIdx.x`   --->  `threadgroup_position_in_grid.x`
+    * `blockDim.x`   --->  `threads_per_threadgroup.x`
+    * `__syncthreads()` ---> `threadgroup_barrier(mem_flags::mem_threadgroup)`
+
+### 3.3 Kernel Routing Table Specification
+* REQ-2.3.1: Sequential Argument Layout Extraction
+  The compilation engine must record the precise sequence and underlying data types of the kernel arguments during code mutation.
+* REQ-2.3.2: Containerized Routing Artifact Serialization
+  The system must construct a JSON layout named `routing_table.txt` containing explicit metadata definitions for every compiled kernel function. The schema contract must track the index position, memory qualifier type (device vs. constant), and the corresponding bound buffer block. 
+  This file must be zipped inside `mcu_artifacts.zip` along with the source mapping logs and the newly generated intermediate `.metal` code stream.
+
+```json
+{
+  "translated_kernels": {
+    "matriceActivareKernel": {
+      "msl_entry_point": "matriceActivareKernel_msl",
+      "argument_count": 3,
+      "bindings": [
+        { "argument_index": 0, "identifier": "input", "type": "float*", "binding_target": "buffer(0)", "space": "device" },
+        { "argument_index": 1, "identifier": "output", "type": "float*", "binding_target": "buffer(1)", "space": "device" },
+        { "argument_index": 2, "identifier": "size", "type": "int", "binding_target": "buffer(2)", "space": "constant" }
+      ]
+    }
+  }
+}
+```
+
+4. INTEGRATION VERIFICATION & REPAIR LOGIC (TESTING)
+4.1 Automated Transpilation Integration Matrix
+The unit testing infrastructure inside /tests must scale to validate translation rules using cross-analysis frameworks:
+
+test_msl_syntax_generation.py: Compares mutated function strings against reference token configurations, checking for correct address block allocations ([[buffer(N)]]).
+
+test_routing_table_schema.py: Asserts that routing_table.txt is correctly compressed inside mcu_artifacts.zip, and programmatically verifies that memory layouts match the exact argument mapping required by the host application.
