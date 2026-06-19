@@ -46,4 +46,14 @@ def build_parser():
         default=None,
         help="Logical CUDA X-axis threads processed by each physical Metal thread",
     )
+    build.add_argument(
+        "--native",
+        action="store_true",
+        help="Compile transformed host sources and the Metal runtime into a macOS executable",
+    )
+    build.add_argument(
+        "--output",
+        default=".mcu/build",
+        help="Native build directory (used with --native)",
+    )
     return parser

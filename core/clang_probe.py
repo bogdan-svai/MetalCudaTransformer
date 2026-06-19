@@ -2,6 +2,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from core.host_transpiler import rewrite_triple_chevrons
+
 
 CUDA_STUBS = "\n".join([
     "#define __global__",
@@ -12,8 +14,16 @@ CUDA_STUBS = "\n".join([
     "extern dim3 blockIdx;",
     "extern dim3 blockDim;",
     "extern dim3 gridDim;",
-    "template <typename Kernel, typename... Args> void cudaLaunch(Kernel kernel, dim3 blocks, dim3 threads, Args... args);",
-    "template <typename Kernel, typename... Args> void cudaLaunch(Kernel kernel, int blocks, int threads, Args... args);",
+    "enum cudaError_t { cudaSuccess = 0 };",
+    "enum cudaMemcpyKind { cudaMemcpyHostToDevice, cudaMemcpyDeviceToHost, cudaMemcpyDeviceToDevice };",
+    "template <typename Kernel, typename... Args> cudaError_t cudaLaunch(Kernel kernel, dim3 blocks, dim3 threads, Args... args);",
+    "template <typename Kernel, typename... Args> cudaError_t cudaLaunch(Kernel kernel, int blocks, int threads, Args... args);",
+    "cudaError_t cudaMalloc(void**, unsigned long);",
+    "template <typename T> cudaError_t cudaMalloc(T** pointer, unsigned long size);",
+    "cudaError_t cudaFree(void*);",
+    "cudaError_t cudaMemcpy(void*, const void*, unsigned long, cudaMemcpyKind);",
+    "cudaError_t cudaDeviceSynchronize();",
+    "cudaError_t cudaGetLastError();",
     "",
 ])
 
@@ -46,10 +56,21 @@ def probe_with_clang(sources, read_text):
             handle.write(CUDA_STUBS)
             for source in sources:
                 handle.write(f'\n#line 1 "{Path(source).as_posix()}"\n')
-                for line in read_text(source).splitlines():
-                    handle.write("\n" if line.lstrip().startswith("#include") else line + "\n")
+                probe_source = rewrite_triple_chevrons(read_text(source))
+                for line in probe_source.splitlines():
+                    is_cuda_include = line.lstrip().startswith("#include") and (
+                        "cuda_runtime.h" in line or "cuda.h" in line
+                    )
+                    handle.write("\n" if is_cuda_include else line + "\n")
         try:
-            tu = index.parse(virtual_path, args=["-x", "c++", "-std=c++17"])
+            args = ["-x", "c++", "-std=c++17"]
+            sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            resource_dir = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17"
+            if os.path.isdir(sdk):
+                args.extend(["-isysroot", sdk])
+            if os.path.isdir(resource_dir):
+                args.extend(["-resource-dir", resource_dir])
+            tu = index.parse(virtual_path, args=args)
             for diagnostic in tu.diagnostics:
                 if diagnostic.severity >= diagnostic.Warning:
                     diagnostics.append({

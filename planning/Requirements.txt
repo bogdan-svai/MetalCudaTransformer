@@ -77,15 +77,19 @@
 
 ## 4.2 Functional Requirements
 * REQ-4.1.1: Wrapper Interface Definition (cuda_to_metal.h)
-  Develop a single C++ header file implementing core CUDA runtime actions using the type definitions exposed by Apple's official header-only Metal-cpp library.
+  Develop a C++17 public header exposing dim3, cudaMalloc, cudaMemcpy, cudaFree, cudaDeviceSynchronize, error reporting, and typed kernel dispatch. The backend uses Apple's Objective-C++ Metal API, avoiding a vendored Metal-cpp dependency.
 * REQ-4.1.2: Unified Memory Management (UMA Integration)
   The wrapper must map cudaMalloc calls directly to MTL::Device::newBuffer configurations using MTL::ResourceStorageModeShared. It must map cudaMemcpy calls to a native standard memcpy execution directly within the shared RAM, bypassing any virtual PCIe transfer overhead.
 * REQ-4.1.3: Runtime Routing Table Resolution
-  The native triple-chevron execution syntax (<<<grid, block>>>) must be intercepted and redirected to a backend dispatcher handler. This dispatcher must query the Kernel Routing Table (generated in REQ-2.1.4) to dynamically determine the targeted Metal pipeline state object and pack the sequence of standard C++ raw arguments into their exact corresponding [[buffer(N)]] target slot allocations before launching the threadgroup.
+  Standard C++ preprocessing cannot intercept CUDA triple-chevron grammar. The MCU host pass must rewrite both `kernel<<<grid, block>>>(args...)` and `cudaLaunch(kernel, grid, block, args...)` into typed runtime dispatch calls. The dispatcher queries a versioned routing table to resolve entry points and numeric buffer slots.
+* REQ-4.1.4: Native Build Output
+  `mcu build <path> --native --output <directory>` must emit generated.metal, routing_table.txt, transformed host sources, and a macOS executable linked with Metal and Foundation.
+* REQ-4.1.5: Physical Geometry Enforcement
+  Coarsening divides only runtime block.x. Grid dimensions remain unchanged. Dispatch rejects incompatible geometry and physical threadgroup volumes above the pipeline limit.
 
 ## 4.3 Non-Functional Requirements
-* REQ-4.3.1: Zero-Copy Overhead
-  The overall allocation and memory management wrapper functions must not introduce more than a 5% latency overhead compared to writing native Metal buffer commands.
+* REQ-4.3.1: Shared Allocation Latency
+  After warm-up, repeated 4 KiB shared-buffer allocations must report p95 latency below 2ms on the local Apple Silicon verification runner. The benchmark must report measurements rather than infer leak freedom from latency.
 
 
 # -----------------------------------------------------------------------------

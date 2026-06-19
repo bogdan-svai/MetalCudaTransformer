@@ -42,7 +42,8 @@ fi
 
 echo
 echo "== stage3 automatic recovery =="
-cat > /tmp/mcu_auto_coarsening.cu <<'EOF'
+AUTO_DIR="$(mktemp -d)"
+cat > "$AUTO_DIR/auto_coarsening.cu" <<'EOF'
 __global__ void autoKernel(float* values, int count) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx < count) {
@@ -54,9 +55,20 @@ void host() {
     cudaLaunch(autoKernel, 1, 2048, 0, 2048);
 }
 EOF
-./mcu build /tmp/mcu_auto_coarsening.cu
+./mcu build "$AUTO_DIR/auto_coarsening.cu"
 
 if command -v xcrun >/dev/null 2>&1; then
   unzip -p mcu_artifacts.zip generated.metal > /tmp/mcu_auto_coarsening.metal
   /usr/bin/time -p xcrun -sdk macosx metal /tmp/mcu_auto_coarsening.metal -o /tmp/mcu_auto_coarsening.air
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
+  echo
+  echo "== stage4 native build =="
+  /usr/bin/time -p ./mcu build examples/stage4_numeric/main.cu \
+    --native --output /tmp/mcu_stage4_verify
+
+  echo
+  echo "== stage4 numeric runtime =="
+  /usr/bin/time -p /tmp/mcu_stage4_verify/main
 fi

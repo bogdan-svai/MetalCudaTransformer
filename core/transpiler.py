@@ -50,7 +50,10 @@ def transpile(metadata, coarsening_plans=None):
         }
 
     metal_source = render_metal_source(metal_functions)
-    routing_table = {"translated_kernels": translated}
+    routing_table = {
+        "schema_version": 1,
+        "translated_kernels": translated,
+    }
     return {
         "metal_source": metal_source,
         "routing_table": routing_table,
@@ -75,6 +78,8 @@ def translate_parameters(parameters):
             "identifier": parsed["identifier"],
             "type": parsed["type"],
             "binding_target": binding_target,
+            "buffer_index": index,
+            "kind": "buffer" if parsed["is_pointer"] else "scalar",
             "space": space,
         })
     return translated, bindings

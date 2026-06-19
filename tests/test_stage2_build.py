@@ -70,6 +70,7 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
     assert "blockDim" not in metal
 
     table = routing["translated_kernels"]["scale"]
+    assert routing["schema_version"] == 1
     assert table["msl_entry_point"] == "scale_msl"
     assert table["argument_count"] == 3
     assert table["bindings"] == [
@@ -78,6 +79,8 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
             "identifier": "values",
             "type": "float*",
             "binding_target": "buffer(0)",
+            "buffer_index": 0,
+            "kind": "buffer",
             "space": "device",
         },
         {
@@ -85,6 +88,8 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
             "identifier": "count",
             "type": "int",
             "binding_target": "buffer(1)",
+            "buffer_index": 1,
+            "kind": "scalar",
             "space": "constant",
         },
         {
@@ -92,6 +97,8 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
             "identifier": "factor",
             "type": "float",
             "binding_target": "buffer(2)",
+            "buffer_index": 2,
+            "kind": "scalar",
             "space": "constant",
         },
     ]

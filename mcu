@@ -7,6 +7,7 @@ from cli.arg_parser import build_parser
 from core.artifacts import write_artifact
 from core.ast_parser import parse_project
 from core.coarsening import plan_coarsening
+from core.native_builder import build_native
 from core.sanity import validate
 from core.transpiler import transpile
 
@@ -81,6 +82,29 @@ def run_build(args):
         "generated.metal": build_output["metal_source"],
         "routing_table.txt": build_output["routing_table_text"],
     })
+    if args.native:
+        native = build_native(
+            metadata,
+            build_output,
+            output_directory=args.output,
+            project_root=Path(__file__).resolve().parent,
+        )
+        payload["build"]["native"] = native
+        if not native["ok"]:
+            payload["ok"] = False
+            payload["diagnostics"].append({
+                "code": "NativeCompileFailed",
+                "severity": "error",
+                "message": native["diagnostic"],
+                "file": None,
+                "line": None,
+            })
+            write_artifact(payload, extra_files={
+                "generated.metal": build_output["metal_source"],
+                "routing_table.txt": build_output["routing_table_text"],
+            })
+            emit(payload, args.json)
+            return 1
     emit(payload, args.json)
     return 0
 
@@ -110,7 +134,11 @@ def emit(payload, as_json):
     if payload.get("command") == "build":
         plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
         optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())
-        stage = "Stage 3 optimized build" if optimized else "Stage 2 build"
+        native = payload.get("build", {}).get("native")
+        if native:
+            stage = "Stage 4 native build"
+        else:
+            stage = "Stage 3 optimized build" if optimized else "Stage 2 build"
     print(f"MCU {stage}: {metadata.get('entry', '-')}")
     print(f"Parser: {metadata.get('parser', '-')}")
     print(f"Sources: {len(metadata.get('sources', []))}")
@@ -142,6 +170,9 @@ def emit(payload, as_json):
                         f"Coarsening: {kernel} factor={plan['coarsening_factor']} "
                         f"physical_block={plan['physical_block']} mode={plan['mode']}"
                     )
+            native = payload["build"].get("native")
+            if native and native.get("ok"):
+                print(f"Native executable: {native['executable']}")
         print(f"Artifact: {payload['artifact']} -> {artifact_contents}")
 
 

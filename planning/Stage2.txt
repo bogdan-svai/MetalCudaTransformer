@@ -47,19 +47,20 @@ Stage 2 introduces the `build` pipeline orchestrator. It expands the structural 
 * REQ-2.3.1: Sequential Argument Layout Extraction
   The compilation engine must record the precise sequence and underlying data types of the kernel arguments during code mutation.
 * REQ-2.3.2: Containerized Routing Artifact Serialization
-  The system must construct a JSON layout named `routing_table.txt` containing explicit metadata definitions for every compiled kernel function. The schema contract must track the index position, memory qualifier type (device vs. constant), and the corresponding bound buffer block. 
+  The system must construct a versioned JSON layout named `routing_table.txt`. The schema tracks argument order, memory space, buffer/scalar kind, numeric buffer index, and the Metal entry point.
   This file must be zipped inside `mcu_artifacts.zip` along with the source mapping logs and the newly generated intermediate `.metal` code stream.
 
 ```json
 {
+  "schema_version": 1,
   "translated_kernels": {
     "matriceActivareKernel": {
       "msl_entry_point": "matriceActivareKernel_msl",
       "argument_count": 3,
       "bindings": [
-        { "argument_index": 0, "identifier": "input", "type": "float*", "binding_target": "buffer(0)", "space": "device" },
-        { "argument_index": 1, "identifier": "output", "type": "float*", "binding_target": "buffer(1)", "space": "device" },
-        { "argument_index": 2, "identifier": "size", "type": "int", "binding_target": "buffer(2)", "space": "constant" }
+        { "argument_index": 0, "buffer_index": 0, "identifier": "input", "type": "float*", "kind": "buffer", "binding_target": "buffer(0)", "space": "device" },
+        { "argument_index": 1, "buffer_index": 1, "identifier": "output", "type": "float*", "kind": "buffer", "binding_target": "buffer(1)", "space": "device" },
+        { "argument_index": 2, "buffer_index": 2, "identifier": "size", "type": "int", "kind": "scalar", "binding_target": "buffer(2)", "space": "constant" }
       ]
     }
   }

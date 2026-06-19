@@ -5,6 +5,7 @@ from core.model import FunctionInfo, LaunchInfo
 
 
 SOURCE_EXTENSIONS = {".cpp", ".cc", ".cxx", ".cu", ".hpp", ".h"}
+IGNORED_SOURCE_DIRECTORIES = {".git", ".mcu", "__pycache__"}
 
 
 def read_text(path):
@@ -64,14 +65,18 @@ def discover_sources(entry_path):
     if entry.is_dir():
         return sorted(
             path for path in entry.rglob("*")
-            if path.is_file() and path.suffix in SOURCE_EXTENSIONS
+            if path.is_file() and path.suffix in SOURCE_EXTENSIONS and not _is_ignored_source(path)
         )
     if entry.is_file():
         return sorted(
             path for path in root.rglob("*")
-            if path.is_file() and path.suffix in SOURCE_EXTENSIONS
+            if path.is_file() and path.suffix in SOURCE_EXTENSIONS and not _is_ignored_source(path)
         )
     return []
+
+
+def _is_ignored_source(path):
+    return any(part in IGNORED_SOURCE_DIRECTORIES for part in path.parts)
 
 
 def _source_root(entry):
@@ -122,6 +127,7 @@ def resolve_expr(expr, variables):
 def extract_functions(path, text):
     functions = []
     clean = strip_comments(text)
+    clean = re.sub(r"^\s*#.*$", "", clean, flags=re.MULTILINE)
     pattern = re.compile(
         r"(?P<prefix>(?:__global__\s+|__host__\s+|__device__\s+|static\s+|inline\s+|extern\s+)*)"
         r"(?P<ret>[A-Za-z_][\w:<>,~*&\s]*?)\s+"
@@ -158,14 +164,14 @@ def extract_launches(path, text):
     variables = extract_variables(text)
     clean = strip_comments(text)
 
-    for match in re.finditer(r"\bcudaLaunch\s*\((.*?)\)\s*;", clean, re.DOTALL):
-        args = split_top_level(match.group(1))
+    for start, argument_text in iter_function_calls(clean, "cudaLaunch"):
+        args = split_top_level(argument_text)
         if len(args) < 3:
             continue
         launches.append(LaunchInfo(
             kernel=normalize_expr(args[0]),
             file=path.as_posix(),
-            line=line_for_offset(clean, match.start()),
+            line=line_for_offset(clean, start),
             grid_expr=resolve_expr(args[1], variables),
             block_expr=resolve_expr(args[2], variables),
             args=[normalize_expr(arg) for arg in args[3:]],
@@ -187,3 +193,24 @@ def extract_launches(path, text):
             syntax="triple_chevron",
         ))
     return launches
+
+
+def iter_function_calls(text, function_name):
+    pattern = re.compile(rf"\b{re.escape(function_name)}\s*\(")
+    for match in pattern.finditer(text):
+        opening = match.end() - 1
+        closing = find_matching_delimiter(text, opening, "(", ")")
+        if closing is not None:
+            yield match.start(), text[opening + 1:closing]
+
+
+def find_matching_delimiter(text, opening, open_char, close_char):
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == open_char:
+            depth += 1
+        elif text[index] == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
