@@ -1,0 +1,15 @@
+# STAGE 8 - CUDA LIBRARY ADAPTERS AND MPS
+
+## Scope
+* Add typed library-call IR and a registry of CUDA-to-Apple adapters.
+* Introduce routing schema version 2 with explicit compatibility validation.
+* Implement the first adapter: cublasSgemm to MPSMatrixMultiplication.
+* Preserve cuBLAS transpose, leading-dimension, alpha, beta, and status semantics.
+
+MPSMatrixMultiplication targets Apple GPU acceleration. This stage does not claim
+Neural Engine execution.
+
+## Acceptance
+* A small GEMM, such as 128x128, matches an independent CPU reference.
+* A 2048x2048 case is a GPU smoke/performance benchmark, not a sequential CPU test.
+* Unsupported cuBLAS modes return structured compile-time diagnostics.

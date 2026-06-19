@@ -1,0 +1,14 @@
+# STAGE 7 - ASYNCHRONOUS STREAMS AND COMMAND SCHEDULING
+
+## Scope
+* Implement cudaStreamCreate, cudaStreamDestroy, and cudaStreamSynchronize.
+* Implement cudaMemcpyAsync for shared-buffer operations.
+* Introduce a command scheduler with explicit in-flight resource ownership.
+* Preserve CUDA ordering within a stream and permit independent stream progress.
+
+Metal execution overlap is hardware-dependent and is measured as a benchmark,
+not promised as a correctness guarantee.
+
+## Acceptance
+* Per-stream ordering and cross-stream synchronization tests pass.
+* cudaFree cannot release a resource still referenced by in-flight work.

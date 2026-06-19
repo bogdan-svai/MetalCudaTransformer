@@ -1,0 +1,13 @@
+# STAGE 6 - THREADGROUP MEMORY AND ATOMIC PARITY
+
+## Scope
+* Parse static and dynamic CUDA `__shared__` declarations into typed IR.
+* Generate MSL threadgroup bindings and routing memory-length metadata.
+* Configure threadgroup memory before dispatch.
+* Add a typed capability matrix for integer and floating-point CUDA atomics.
+* Translate supported atomics according to device/threadgroup address space.
+
+## Acceptance
+* Shared-memory reduction matches a CPU reference.
+* A 20,000-thread atomic counter returns exactly 20,000.
+* Unsupported atomic type/address combinations fail during validation.

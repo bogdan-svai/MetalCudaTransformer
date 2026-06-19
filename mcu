@@ -1,200 +1,33 @@
 #!/usr/bin/env python3
-import json
 import sys
 from pathlib import Path
 
 from cli.arg_parser import build_parser
-from core.artifacts import write_artifact
-from core.ast_parser import parse_project
-from core.coarsening import plan_coarsening
-from core.native_builder import build_native
-from core.sanity import validate
-from core.transpiler import transpile
-
-
-SUCCESS = "\033[92m[SUCCESS]\033[0m"
-WARNING = "\033[93m[WARNING]\033[0m"
-ERROR = "\033[91m[CRITICAL ERROR]\033[0m"
-
-
-def run_check(args):
-    target = Path(args.path)
-    if not target.exists():
-        payload = invalid_path_payload("check", args.path)
-        emit(payload, args.json)
-        return 2
-
-    metadata = parse_project(target, verbose=args.verbose)
-    diagnostics = validate(metadata)
-    has_errors = any(item["severity"] == "error" for item in diagnostics)
-    payload = {
-        "ok": not has_errors,
-        "command": "check",
-        "metadata": metadata,
-        "diagnostics": diagnostics,
-        "artifact": "mcu_artifacts.zip",
-    }
-    write_artifact(payload)
-    emit(payload, args.json)
-    return 1 if has_errors else 0
-
-
-def run_build(args):
-    target = Path(args.path)
-    if not target.exists():
-        payload = invalid_path_payload("build", args.path)
-        emit(payload, args.json)
-        return 2
-
-    metadata = parse_project(target, verbose=args.verbose)
-    diagnostics = validate(metadata)
-    optimization = plan_coarsening(metadata, requested_factor=args.coarsening)
-    diagnostics.extend(optimization["diagnostics"])
-    if optimization["recovered_hardware_limit"]:
-        diagnostics = [
-            item for item in diagnostics
-            if item["code"] != "HardwareLimitExceeded"
-        ]
-    has_errors = any(item["severity"] == "error" for item in diagnostics)
-    payload = {
-        "ok": not has_errors,
-        "command": "build",
-        "metadata": metadata,
-        "diagnostics": diagnostics,
-        "artifact": "mcu_artifacts.zip",
-    }
-    if has_errors:
-        write_artifact(payload)
-        emit(payload, args.json)
-        return 1
-
-    build_output = transpile(metadata, coarsening_plans=optimization["plans"])
-    payload["build"] = {
-        "metal_file": "generated.metal",
-        "routing_table": "routing_table.txt",
-        "translated_kernel_count": len(build_output["routing_table"]["translated_kernels"]),
-        "coarsening": {
-            "requested_factor": args.coarsening,
-            "plans": optimization["plans"],
-        },
-    }
-    write_artifact(payload, extra_files={
-        "generated.metal": build_output["metal_source"],
-        "routing_table.txt": build_output["routing_table_text"],
-    })
-    if args.native:
-        native = build_native(
-            metadata,
-            build_output,
-            output_directory=args.output,
-            project_root=Path(__file__).resolve().parent,
-        )
-        payload["build"]["native"] = native
-        if not native["ok"]:
-            payload["ok"] = False
-            payload["diagnostics"].append({
-                "code": "NativeCompileFailed",
-                "severity": "error",
-                "message": native["diagnostic"],
-                "file": None,
-                "line": None,
-            })
-            write_artifact(payload, extra_files={
-                "generated.metal": build_output["metal_source"],
-                "routing_table.txt": build_output["routing_table_text"],
-            })
-            emit(payload, args.json)
-            return 1
-    emit(payload, args.json)
-    return 0
-
-
-def invalid_path_payload(command, path):
-    return {
-        "ok": False,
-        "command": command,
-        "metadata": {},
-        "diagnostics": [{
-            "code": "InvalidTargetPath",
-            "severity": "error",
-            "message": f"Target path does not exist: {path}",
-            "file": path,
-            "line": None,
-        }],
-    }
-
-
-def emit(payload, as_json):
-    if as_json:
-        print(json.dumps(payload, sort_keys=True))
-        return
-
-    metadata = payload.get("metadata", {})
-    stage = "Stage 1 check"
-    if payload.get("command") == "build":
-        plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
-        optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())
-        native = payload.get("build", {}).get("native")
-        if native:
-            stage = "Stage 4 native build"
-        else:
-            stage = "Stage 3 optimized build" if optimized else "Stage 2 build"
-    print(f"MCU {stage}: {metadata.get('entry', '-')}")
-    print(f"Parser: {metadata.get('parser', '-')}")
-    print(f"Sources: {len(metadata.get('sources', []))}")
-    print(f"Kernels: {len(metadata.get('kernels', []))}")
-    print(f"Launches: {len(metadata.get('launches', []))}")
-
-    for item in metadata.get("parser_diagnostics", []):
-        label = WARNING if item.get("severity") == "warning" else "[INFO]"
-        location = format_location(item)
-        print(f"{label} {location}{item['message']}")
-
-    diagnostics = payload.get("diagnostics", [])
-    if not diagnostics:
-        print(f"{SUCCESS} Sanity checks passed.")
-    for item in diagnostics:
-        label = ERROR if item["severity"] == "error" else WARNING
-        location = format_location(item)
-        print(f"{label} {location}{item['message']}")
-
-    if payload.get("artifact"):
-        artifact_contents = "ast_output.txt"
-        if payload.get("build"):
-            artifact_contents += ", generated.metal, routing_table.txt"
-            print(f"Translated kernels: {payload['build']['translated_kernel_count']}")
-            plans = payload["build"]["coarsening"]["plans"]
-            for kernel, plan in plans.items():
-                if plan["coarsening_factor"] > 1:
-                    print(
-                        f"Coarsening: {kernel} factor={plan['coarsening_factor']} "
-                        f"physical_block={plan['physical_block']} mode={plan['mode']}"
-                    )
-            native = payload["build"].get("native")
-            if native and native.get("ok"):
-                print(f"Native executable: {native['executable']}")
-        print(f"Artifact: {payload['artifact']} -> {artifact_contents}")
-
-
-def format_location(item):
-    file = item.get("file")
-    line = item.get("line")
-    if not file:
-        return ""
-    if line:
-        return f"{file}:{line}: "
-    return f"{file}: "
+from core.application.pipeline import CompilerPipeline
+from core.diagnostics.presenter import emit
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    pipeline = CompilerPipeline(project_root=Path(__file__).resolve().parent)
+
     if args.command == "check":
-        return run_check(args)
-    if args.command == "build":
-        return run_build(args)
-    parser.error(f"Unsupported command: {args.command}")
-    return 2
+        result = pipeline.check(args.path, verbose=args.verbose)
+    elif args.command == "build":
+        result = pipeline.build(
+            args.path,
+            verbose=args.verbose,
+            coarsening=args.coarsening,
+            native=args.native,
+            output=args.output,
+        )
+    else:
+        parser.error(f"Unsupported command: {args.command}")
+        return 2
+
+    emit(result.payload, args.json)
+    return result.exit_code
 
 
 if __name__ == "__main__":

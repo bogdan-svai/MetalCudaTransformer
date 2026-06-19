@@ -16,7 +16,8 @@ The runtime wrapper translates state calls on the host CPU into immediate state 
 
 ### 2.1 Component Definitions:
 * runtime/include/cuda_to_metal.h: The public C++17 emulation header. Contains CUDA-compatible types, memory shims, typed argument packing, and the cudaLaunch macro.
-* runtime/src/runtime_core.mm: The Objective-C++ backend. Initializes Metal, manages shared buffers, parses routing metadata, compiles MSL, and dispatches pipelines.
+* runtime/src/runtime_core.mm: The CUDA-compatible runtime facade and error coordinator.
+* runtime/src/device_context.mm, buffer_registry.mm, artifact_catalog.mm, pipeline_cache.mm, dispatch_geometry.mm, and kernel_dispatcher.mm: Separate Objective-C++ resource owners and dispatch services.
 * core/host_transpiler.py: Rewrites triple-chevron launches and removes device-only kernel code from host compilation units.
 
 The CLI extracts runtime inputs into the native build directory. The ZIP remains an unencrypted transport artifact and is not parsed by the runtime process.

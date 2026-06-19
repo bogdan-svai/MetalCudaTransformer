@@ -1,0 +1,13 @@
+# STAGE 9 - STABLE TOOLING API AND IDE INTEGRATION
+
+## Scope
+* Freeze versioned JSON output for check and build commands.
+* Standardize diagnostic codes, source locations, and exit statuses.
+* Publish a machine-readable capability report.
+* Provide the backend contract required by a VS Code extension.
+
+## Acceptance
+* stdout contains only JSON when `--json` is active.
+* Exit status 0 means success, 1 means source/semantic failure, and 2 means
+  infrastructure or invocation failure.
+* Contract fixtures detect accidental schema changes.

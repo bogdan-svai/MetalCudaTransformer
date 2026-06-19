@@ -1,0 +1,58 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 5 - ARCHITECTURAL REFACTORING, TYPED IR & SOURCE DIAGNOSTICS
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVES
+Stage 5 establishes stable ownership boundaries before adding further CUDA parity.
+Existing Stage 1-4 behavior must remain compatible while compiler and runtime
+components become independently testable and replaceable.
+
+## 2. COMPILER ARCHITECTURE
+
+  CLI -> Application Pipeline -> Frontend -> Typed IR -> Passes -> Backends
+                           |                              -> Diagnostics
+                           +-> Artifact and Native Build Services
+
+* `core/frontend/` owns source discovery and CUDA parsing.
+* `core/ir/` owns typed source, function, launch, binding, and routing models.
+* `core/passes/` owns validation and optimization transformations.
+* `core/backends/` owns Metal and host source generation.
+* `core/build/` owns native toolchain invocation and output directories.
+* `core/diagnostics/` owns compiler diagnostic parsing and presentation.
+* `core/application/` orchestrates use cases without CLI formatting logic.
+
+Compatibility modules may re-export public functions during migration, but they
+must not retain duplicate implementations.
+
+## 3. RUNTIME ARCHITECTURE
+
+The Objective-C++ runtime is split by resource ownership:
+
+* DeviceContext: Metal device and command queue lifecycle.
+* BufferRegistry: shared allocations, pointer ranges, and buffer offsets.
+* ArtifactCatalog: routing schema and JIT Metal library loading.
+* PipelineCache: compute pipeline creation and reuse.
+* DispatchGeometry: coarsening and hardware-limit validation.
+* KernelDispatcher: argument binding, encoding, submission, and completion.
+* RuntimeFacade: CUDA-compatible API coordination and error state.
+
+## 4. SOURCE MAPPING AND DIAGNOSTICS
+
+* REQ-5.1: Generated MSL must emit `#line` directives using original CUDA file
+  and body line metadata before translated kernel instructions.
+* REQ-5.2: Routing entries must retain the original kernel source location.
+* REQ-5.3: Native builds must validate generated MSL with `xcrun metal` before
+  linking host code.
+* REQ-5.4: Metal and clang diagnostics must be parsed into structured records
+  containing code, severity, message, file, line, and column.
+* REQ-5.5: User-facing diagnostics must reference CUDA input files rather than
+  temporary generated files whenever source mapping is available.
+
+## 5. ACCEPTANCE
+
+* All Stage 1-4 tests remain green.
+* A deliberately invalid CUDA kernel produces a native-build diagnostic pointing
+  to its original `.cu` file and line.
+* The Stage 4 numeric executable remains exact within epsilon `1e-6`.
+* Runtime components compile as separate Objective-C++ translation units.
+* `make verify` covers syntax, native build, source mapping, and GPU execution.

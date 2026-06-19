@@ -7,6 +7,13 @@ cd "$ROOT"
 echo "== pytest =="
 python -m pytest -q
 
+if command -v xcrun >/dev/null 2>&1; then
+  echo
+  echo "== stage5 runtime component syntax =="
+  xcrun clang++ -std=c++17 -fobjc-arc -fsyntax-only \
+    -Iruntime/include -Iruntime/src runtime/src/*.mm
+fi
+
 echo
 echo "== stage1 check timing =="
 /usr/bin/time -p ./mcu check examples/complex_app/app/main.cpp
@@ -64,11 +71,11 @@ fi
 
 if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo
-  echo "== stage4 native build =="
+  echo "== stage5 native build and Metal validation =="
   /usr/bin/time -p ./mcu build examples/stage4_numeric/main.cu \
     --native --output /tmp/mcu_stage4_verify
 
   echo
-  echo "== stage4 numeric runtime =="
+  echo "== stage5 numeric regression runtime =="
   /usr/bin/time -p /tmp/mcu_stage4_verify/main
 fi

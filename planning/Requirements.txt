@@ -93,28 +93,44 @@
 
 
 # -----------------------------------------------------------------------------
-# STAGE 5: Inverse Error Tracking (Source Mapping)
+# STAGE 5: Architectural Refactoring and Source Diagnostics
 # -----------------------------------------------------------------------------
 
 ## 5.1 Objectives
-* Allow seamless debugging by mapping runtime compilation and syntax errors raised by the macOS compiler utilities back to their original locations inside the user's CUDA source files.
+* Establish typed compiler boundaries and independently testable runtime components.
+* Map native Metal diagnostics back to original CUDA source locations.
 
 ## 5.2 Functional Requirements
 * REQ-5.1.1: Line Directive Injection
   During the text generation phase of the .metal source file, the compiler must insert a standard C preprocessor #line <original_cuda_line> "<filename>.cu" directive immediately before translating each logical block of instructions.
 * REQ-5.1.2: Stderr Stream Interception and Parsing
-  Any compilation or assembly errors outputted to stderr by clang++ during the runtime compilation process must be caught by the Python application process. Because of the line breadcrumbs injected under REQ-5.1.1, the compiler diagnostics will automatically output the location in the user's .cu file, cleanly masking the temporary intermediate .metal documents.
+  Metal and clang diagnostics must be parsed into structured records containing severity, message, file, line, and column.
+* REQ-5.1.3: Native Metal Validation
+  Native builds must compile generated MSL before host linking and fail with a source-mapped diagnostic when MSL is invalid.
+* REQ-5.1.4: Component Boundaries
+  Frontend, IR, passes, backends, build services, diagnostics, and runtime resource owners must expose explicit interfaces without duplicate implementations.
 
 
 # -----------------------------------------------------------------------------
-# STAGE 6: Architectural Validation for IDE Integration (Extensibility Interface)
+# STAGE 6: Threadgroup Memory and Atomic Parity
 # -----------------------------------------------------------------------------
 
 ## 6.1 Objectives
-* Prepare the CLI application engine to serve as a reliable, predictable backend service for integrated development environments, specifically targeting a future VS Code extension.
+* Support CUDA shared memory and a validated subset of atomic operations.
 
 ## 6.2 Functional Requirements
-* REQ-6.1.1: Standardized JSON Serialization Output
-  The CLI engine must support an output formatting flag (--json) for the check subcommand. When active, all Sanity Check errors, warnings, and file structural metadata must be written to stdout exclusively as a structured JSON object, enabling straightforward parsing by a parent Node.js/TypeScript extension layer.
-* REQ-6.1.2: Reliable Exit Status Codes
-  The engine process must strictly adhere to standardized return codes: 0 for successful execution/validation, 1 for critical semantic errors (sanity check failures), and 2 for infrastructure misconfigurations or invalid filesystem target paths.
+* REQ-6.1.1: Shared Memory Mapping
+  Static and dynamic shared allocations must map to Metal threadgroup memory with explicit byte-size metadata.
+* REQ-6.1.2: Typed Atomic Mapping
+  Supported atomic operations must be selected by value type and address space; unsupported combinations fail validation.
+
+# STAGE 7: Asynchronous Streams
+* Preserve in-stream ordering and in-flight resource lifetime.
+* Expose stream creation, destruction, synchronization, and asynchronous copies.
+
+# STAGE 8: Library Adapters
+* Introduce routing schema version 2 and an extensible CUDA-library adapter registry.
+* Map a validated cublasSgemm subset to MPSMatrixMultiplication.
+
+# STAGE 9: Stable Tooling API and IDE Integration
+* Freeze JSON contracts, diagnostic codes, capability reporting, and exit statuses.

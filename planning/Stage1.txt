@@ -69,4 +69,4 @@ An isolated testing suite powered by `pytest` must validate system output by tar
 * `tests/test_stage1_cli.py` must validate hardware limits, unsupported libraries, divergent barriers, invalid paths, JSON output, and the compressed artifact schema.
 
 ### 5.2 GitHub Operations Runner Workflow
-A cloud orchestration execution schema file (`.github/workflows/stage1_test.yml`) must run inside a modern `macos-latest` environment container to check pull requests and repository updates automatically. The routine must initialize dependencies, link base packages, install test utilities, and execute the automated testing suite on clean system clones.
+A cloud orchestration execution schema file (`.github/workflows/verify.yml`) must run inside a modern `macos-latest` environment container to check pull requests and repository updates automatically. The routine must initialize dependencies, link base packages, install test utilities, and execute the automated testing suite on clean system clones.

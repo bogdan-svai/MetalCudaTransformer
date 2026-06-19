@@ -61,7 +61,8 @@ Stage 2 introduces the `build` pipeline orchestrator. It expands the structural 
         { "argument_index": 0, "buffer_index": 0, "identifier": "input", "type": "float*", "kind": "buffer", "binding_target": "buffer(0)", "space": "device" },
         { "argument_index": 1, "buffer_index": 1, "identifier": "output", "type": "float*", "kind": "buffer", "binding_target": "buffer(1)", "space": "device" },
         { "argument_index": 2, "buffer_index": 2, "identifier": "size", "type": "int", "kind": "scalar", "binding_target": "buffer(2)", "space": "constant" }
-      ]
+      ],
+      "source": { "file": "kernels/matrix.cu", "line": 12 }
     }
   }
 }
