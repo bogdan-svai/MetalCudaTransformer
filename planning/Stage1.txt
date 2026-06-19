@@ -1,0 +1,73 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 1 - CLI ARCHITECTURE & SEMANTIC VALIDATION
+# -----------------------------------------------------------------------------
+
+## 1. MODULE OVERVIEW & ARCHITECTURAL OBJECTIVES
+The primary objective of Stage 1 is to isolate the Abstract Syntax Tree (AST) parsing logic and semantic safety checks into a decoupled, zero-GUI Command Line Interface (CLI) utility. This utility serves as the absolute entry point and orchestrator for the entire MCU pipeline. It must analyze input source files and enforce hardware-specific boundary conditions before any downstream code generation or translation occurs.
+
+To maintain a clean working directory and prevent workspace pollution, all parsed metadata and structural blueprints generated at runtime must be compressed and encapsulated directly into an immutable, sandboxed artifact container.
+
+All legacy prototypes, temporary scripts, and unstable research files must be completely quarantined within the `initial_testing/` directory to prevent structural regression and pollution of the production codebase.
+
+## 2. SYSTEM ARCHITECTURE & COMPONENT TOPOLOGY
+The module must strictly follow a unidirectional pipeline architecture to achieve clean separation of concerns:
+
+  [Source File] ---> CLI Parsing Layer ---> Core AST/Regex Parser ---> Artifact Compression (ZIP) ---> Sanity Policy Engine ---> Diagnostic Dispatcher
+
+### 2.1 Component Definitions:
+* cli/arg_parser.py: Standard system argument gatekeeper. Responsible for flag validation and input sanity mapping.
+* core/ast_parser.py: Structural extraction engine leveraging native libclang bindings to construct and walk the compiler AST.
+* core/fallback.py: Preprocessor-resilient lexical scanning backup engine powered by regex matching algorithms.
+* core/sanity.py: The hardware execution boundary layer. Evaluates target parameters against hard-coded Apple Silicon GPU constraints.
+* mcu: Root-level, stateful system orchestrator and main executable entry point.
+
+## 3. DETAILED FUNCTIONAL REQUIREMENTS
+
+### 3.1 CLI Interface & Execution Protocols
+* REQ-1.1.1: Standalone Executable Binary Target
+  The root orchestrator script (`mcu`) must possess direct system execution permissions (`chmod +x`) and respond to the explicit sub-command invocation syntax: `./mcu check <path_to_source_file>`.
+* REQ-1.1.2: Standardized JSON Serialization Protocol
+  The CLI layer must accept a `--json` parameter flag. When initialized, standard console log emissions must be completely muted, and all program output (metrics, errors, warnings) must be written to `stdout` exclusively as a single, validated JSON string wrapper.
+* REQ-1.1.3: Diagnostics Verbosity Controller
+  The CLI layer must evaluate a `--verbose` flag. If true (and `--json` is false), the system must print explicit token layout properties and Clang cursor indices to `stdout` during parsing execution.
+
+### 3.2 Metadata Extraction Layer & Containerization
+* REQ-1.2.1: AST Mapping Architecture
+  The `ast_parser.py` module must map explicit `FUNCTION_DECLARATION` kinds containing host/device CUDA modifiers into an internal dictionary structure tracking kernel namespaces, function line numbers, and device geometry definitions.
+* REQ-1.2.2: Lexical Regex Fallback Shield
+  If `libclang` parsing operations return abstract compilation limits due to unresolvable, hardware-specific NVIDIA macro structures, execution must fall back immediately to `fallback.py`. This module must scan for string occurrences of triple-chevron execution grids (`<<< ... >>>`) to extract layout sizing parameters.
+* REQ-1.2.3: Ephemeral Build Artifact Containerization
+  Immediately following syntax evaluation, the root orchestrator must serialize the metadata layout and compress it directly into a root-level archive named `mcu_artifacts.zip`. The internal payload must be written to a virtual path named `ast_output.txt` using DEFLATED byte-stream compression, ensuring zero raw file footprints remain in the user's workspace.
+
+### 3.3 Semantic Safety Framework (Sanity Policies)
+* REQ-1.3.1: Hardware Limit Boundary Control
+  The policy engine must compute total thread density per compute group ($BlockSize = DimX \times DimY \times DimZ$). If the configuration exceeds the physical Apple Silicon maximum hardware thread group limit of 1024 concurrent execution lanes, the validator must flag a `HardwareLimitExceeded` fatal fault and instantly terminate the build pipeline.
+* REQ-1.3.2: Divergent Thread Squeeze Prevention
+  The policy engine must trace logical execution lines inside function bodies. If a local thread execution barrier (`__syncthreads()`) is identified within an active conditional block (`if`, `else`, `switch`) dependent on index coordinates, the system must trigger a `DivergentBarrierWarning`.
+* REQ-1.3.3: External Proprietary Library Gatekeeping
+  The parser must capture external CUDA third-party header includes (e.g., `#include <cublas_v2.h>`, `#include <cufft.h>`). The validation logic must evaluate inclusions against an immutable array of supported runtime shims. If a library has no translation table mapped in Stage 4, the build must halt with an `UnsupportedExternalLibrary` error.
+
+## 4. SYSTEM OUTPUT & DIAGNOSTIC INTERFACE
+
+### 4.1 Return Codes & Process Termination
+The process must strictly enforce standardized system exit status signals to guarantee predictable continuous integration scripting behaviors:
+* Exit Code 0: Execution succeeded. Sanity checks passed without any critical blocking errors.
+* Exit Code 1: Sanity validation failed. Structural constraints or hardware limits were violated.
+* Exit Code 2: Infrastructure fault. Target files do not exist, or system bindings are unconfigured.
+
+### 4.2 Human-Readable Display Specifications
+Standard output logs must leverage explicit ANSI escape formatting keys to highlight validation severity status strings at a glance:
+* `\033[91m[CRITICAL ERROR]\033[0m` -> Hard failures preventing pipeline deployment.
+* `\033[93m[WARNING]\033[0m` -> Performance constraints or runtime stability risks.
+* `\033[92m[SUCCESS]\033[0m` -> Fully compatible target structural layout configurations.
+
+## 5. REGRESSION AUTOMATION & INTEGRATION CRITERIA (CI/CD)
+
+### 5.1 Compressed Data-Driven Integration Testing
+An isolated testing suite powered by `pytest` must validate system output by targeting containerized file pointers inside the `/tests` boundary directory:
+* `test_sanity_limits.py` -> Feeds manual block structures measuring 2048 layout nodes to guarantee consistent validation crashes.
+* `test_library_check.py` -> Feeds arbitrary external header inclusion lines to confirm that unmapped dependencies fail compilation gracefully.
+* `test_structure_verifier.py` -> Accesses `mcu_artifacts.zip` directly at runtime, opening a read-only stream to evaluate that `ast_output.txt` matches the required structural schema contract without extracting the container onto the host disk.
+
+### 5.2 GitHub Operations Runner Workflow
+A cloud orchestration execution schema file (`.github/workflows/stage1_test.yml`) must run inside a modern `macos-latest` environment container to check pull requests and repository updates automatically. The routine must initialize dependencies, link base packages, install test utilities, and execute the automated testing suite on clean system clones.

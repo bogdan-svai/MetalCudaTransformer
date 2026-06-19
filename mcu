@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+from cli.arg_parser import build_parser
+from core.artifacts import write_artifact
+from core.ast_parser import parse_project
+from core.sanity import validate
+
+
+SUCCESS = "\033[92m[SUCCESS]\033[0m"
+WARNING = "\033[93m[WARNING]\033[0m"
+ERROR = "\033[91m[CRITICAL ERROR]\033[0m"
+
+
+def run_check(args):
+    target = Path(args.path)
+    if not target.exists():
+        payload = {
+            "ok": False,
+            "command": "check",
+            "metadata": {},
+            "diagnostics": [{
+                "code": "InvalidTargetPath",
+                "severity": "error",
+                "message": f"Target path does not exist: {args.path}",
+                "file": args.path,
+                "line": None,
+            }],
+        }
+        emit(payload, args.json)
+        return 2
+
+    metadata = parse_project(target, verbose=args.verbose)
+    diagnostics = validate(metadata)
+    has_errors = any(item["severity"] == "error" for item in diagnostics)
+    payload = {
+        "ok": not has_errors,
+        "command": "check",
+        "metadata": metadata,
+        "diagnostics": diagnostics,
+        "artifact": "mcu_artifacts.zip",
+    }
+    write_artifact(payload)
+    emit(payload, args.json)
+    return 1 if has_errors else 0
+
+
+def emit(payload, as_json):
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+        return
+
+    metadata = payload.get("metadata", {})
+    print(f"MCU Stage 1 check: {metadata.get('entry', '-')}")
+    print(f"Parser: {metadata.get('parser', '-')}")
+    print(f"Sources: {len(metadata.get('sources', []))}")
+    print(f"Kernels: {len(metadata.get('kernels', []))}")
+    print(f"Launches: {len(metadata.get('launches', []))}")
+
+    for item in metadata.get("parser_diagnostics", []):
+        label = WARNING if item.get("severity") == "warning" else "[INFO]"
+        location = format_location(item)
+        print(f"{label} {location}{item['message']}")
+
+    diagnostics = payload.get("diagnostics", [])
+    if not diagnostics:
+        print(f"{SUCCESS} Sanity checks passed.")
+    for item in diagnostics:
+        label = ERROR if item["severity"] == "error" else WARNING
+        location = format_location(item)
+        print(f"{label} {location}{item['message']}")
+
+    if payload.get("artifact"):
+        print(f"Artifact: {payload['artifact']} -> ast_output.txt")
+
+
+def format_location(item):
+    file = item.get("file")
+    line = item.get("line")
+    if not file:
+        return ""
+    if line:
+        return f"{file}:{line}: "
+    return f"{file}: "
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "check":
+        return run_check(args)
+    parser.error(f"Unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

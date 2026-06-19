@@ -1,0 +1,116 @@
+# TECHNICAL SPECIFICATIONS AND SYSTEM REQUIREMENTS (SRS)
+# Project: MCU (Metal-CUDA Unit) Hybrid Transpiler
+
+# This document defines the functional, non-functional, and architectural requirements for developing a Command Line Interface (CLI) utility capable of analyzing, validating, and transpiling NVIDIA CUDA source code into Apple Metal Shading Language (MSL) at runtime. The system uses a hybrid mapping strategy powered by a C++ Wrapper architecture.
+
+# -----------------------------------------------------------------------------
+# STAGE 1: CLI Architecture, Modularization, and Semantic Validation (Sanity Checking)
+# -----------------------------------------------------------------------------
+
+## 1.1 Objectives
+* Isolate abstract syntax tree (AST) parsing logic from any graphical user interface components.
+* Build a standalone CLI to act as the single entry point and orchestrator for the pipeline.
+* Implement a static validation layer to catch critical hardware and logical violations before code generation.
+
+## 1.2 Functional Requirements
+* REQ-1.1.1: Independent CLI Interface
+  The system must execute as a standalone terminal utility (named mcu), exposing two primary subcommands: check (structural analysis and semantic validation) and build (transpilation and native execution compilation).
+* REQ-1.1.2: Decoupled Parsing Subsystem (AST)
+  The parsing component leveraging libclang C++ bindings and the hybrid fallback regex scanner must be isolated into a dedicated package named core/. This module must output a clean, serializable metadata structure (e.g., a dictionary).
+* REQ-1.1.3: Semantic Validation Module (Sanity Checker)
+  The system must evaluate hardware boundaries prior to the code generation phase:
+    * Compute the total number of threads per block (BlockSize = DimX * DimY * DimZ). If this total exceeds the Apple Silicon hardware threadgroup limit of 1024, the pipeline must halt immediately and return a critical error code.
+    * Scan the kernel body for local execution barriers (__syncthreads()). If a barrier is detected inside a branching block dependent on thread indices (divergent execution paths), the system must raise a specific safety warning.
+
+## 1.3 Non-Functional Requirements
+* REQ-1.2.1: Input Error Handling
+  If the target file contains native C++ syntax errors, the parser subsystem must catch the exceptions gracefully without crashing the parent CLI process, returning a formatted error report instead.
+* REQ-1.2.2: Static Analysis Execution Time
+  The parsing and validation phase for an average source file (up to 5,000 lines of code) must execute in under 250 milliseconds.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 2: Transpilation Engine, MSL Generation, and the Kernel Routing Table
+# -----------------------------------------------------------------------------
+
+## 2.1 Objectives
+* Transform the intermediate representation (AST metadata) into text-valid code complying with the Apple Metal Shading Language specification.
+* Generate a dynamic lookup structure (Routing Table) to map host execution parameters to compiled runtime GPU functions.
+
+## 2.2 Functional Requirements
+* REQ-2.1.1: Argument List Translation
+  The code generator must convert raw pointers targeting CUDA global memory (e.g., float*) into qualified Metal device pointers, injecting the correct buffer slot index qualifiers (device float* name [[buffer(N)]]). Value parameters must be mapped as constant references (constant int& name [[buffer(M)]]).
+* REQ-2.1.2: Hardware Geometry Injection
+  At the end of the argument signature for every transpiled kernel function, the engine must automatically append native Metal input attribute qualifiers for thread positioning: [[thread_position_in_grid]], [[threadgroup_position_in_grid]], [[threads_per_threadgroup]], and [[thread_position_in_threadgroup]].
+* REQ-2.1.3: Kernel Body Mutation
+  The engine must replace native CUDA implicit global variables (threadIdx, blockIdx, blockDim) with their mathematically equivalent expressions derived from the injected Metal attributes specified in REQ-2.1.2.
+* REQ-2.1.4: Dynamic Kernel Routing Table Generation
+  The generation engine must compile a Kernel Routing Table (serialized as a JSON map or embedded metadata array). This table must establish an explicit structural link between the CUDA kernel name, its index-to-argument signature mapping (e.g., Argument 0 -> [[buffer(0)]], Argument 1 -> [[buffer(1)]]), and its assigned Metal entry point function pointer generated for the runtime pipeline.
+
+## 2.3 Non-Functional Requirements
+* REQ-2.3.1: Syntactic Validity of Output
+  The code written to the intermediate .metal file must comply with the C++14 standard (the structural foundation of MSL) and must compile via the native macOS metal compiler utility without requiring manual edits.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 3: Optimization via Thread Coarsening
+# -----------------------------------------------------------------------------
+
+## 3.1 Objectives
+* Implement a source-to-source compilation optimization layer designed to adjust compute density for optimal performance on Apple Silicon unified memory architectures.
+
+## 3.2 Functional Requirements
+* REQ-3.1.1: Coarsening Factor Parameterization
+  The CLI must accept an optional configuration flag (--coarsening [1|2|4]) specifying how many logical CUDA threads are packed into a single physical Metal thread.
+* REQ-3.1.2: Grid Geometry Rescaling
+  When the coarsening factor is greater than 1, the launch orchestrator within the C++ runtime layer must automatically rescale the physical grid dimensions dispatched to the Metal API, dividing the chosen execution axis size by the coarsening factor.
+* REQ-3.1.3: Instruction Multiplicity (Loop Unrolling)
+  The code generation engine must duplicate math sequences inside the kernel block using additive coordinate offsets (e.g., id * factor + offset). This allows a single thread to process multiple data points, maximizing register reuse in unified memory.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 4: C++ Runtime Integration (Wrapper Architecture & Routing Resolution)
+# -----------------------------------------------------------------------------
+
+## 4.1 Objectives
+* Intercept and reroute NVIDIA CUDA Runtime API calls from the host application (CPU) to Apple's native Metal framework, querying the Routing Table to resolve memory slots and kernel entry points at runtime.
+
+## 4.2 Functional Requirements
+* REQ-4.1.1: Wrapper Interface Definition (cuda_to_metal.h)
+  Develop a single C++ header file implementing core CUDA runtime actions using the type definitions exposed by Apple's official header-only Metal-cpp library.
+* REQ-4.1.2: Unified Memory Management (UMA Integration)
+  The wrapper must map cudaMalloc calls directly to MTL::Device::newBuffer configurations using MTL::ResourceStorageModeShared. It must map cudaMemcpy calls to a native standard memcpy execution directly within the shared RAM, bypassing any virtual PCIe transfer overhead.
+* REQ-4.1.3: Runtime Routing Table Resolution
+  The native triple-chevron execution syntax (<<<grid, block>>>) must be intercepted and redirected to a backend dispatcher handler. This dispatcher must query the Kernel Routing Table (generated in REQ-2.1.4) to dynamically determine the targeted Metal pipeline state object and pack the sequence of standard C++ raw arguments into their exact corresponding [[buffer(N)]] target slot allocations before launching the threadgroup.
+
+## 4.3 Non-Functional Requirements
+* REQ-4.3.1: Zero-Copy Overhead
+  The overall allocation and memory management wrapper functions must not introduce more than a 5% latency overhead compared to writing native Metal buffer commands.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 5: Inverse Error Tracking (Source Mapping)
+# -----------------------------------------------------------------------------
+
+## 5.1 Objectives
+* Allow seamless debugging by mapping runtime compilation and syntax errors raised by the macOS compiler utilities back to their original locations inside the user's CUDA source files.
+
+## 5.2 Functional Requirements
+* REQ-5.1.1: Line Directive Injection
+  During the text generation phase of the .metal source file, the compiler must insert a standard C preprocessor #line <original_cuda_line> "<filename>.cu" directive immediately before translating each logical block of instructions.
+* REQ-5.1.2: Stderr Stream Interception and Parsing
+  Any compilation or assembly errors outputted to stderr by clang++ during the runtime compilation process must be caught by the Python application process. Because of the line breadcrumbs injected under REQ-5.1.1, the compiler diagnostics will automatically output the location in the user's .cu file, cleanly masking the temporary intermediate .metal documents.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 6: Architectural Validation for IDE Integration (Extensibility Interface)
+# -----------------------------------------------------------------------------
+
+## 6.1 Objectives
+* Prepare the CLI application engine to serve as a reliable, predictable backend service for integrated development environments, specifically targeting a future VS Code extension.
+
+## 6.2 Functional Requirements
+* REQ-6.1.1: Standardized JSON Serialization Output
+  The CLI engine must support an output formatting flag (--json) for the check subcommand. When active, all Sanity Check errors, warnings, and file structural metadata must be written to stdout exclusively as a structured JSON object, enabling straightforward parsing by a parent Node.js/TypeScript extension layer.
+* REQ-6.1.2: Reliable Exit Status Codes
+  The engine process must strictly adhere to standardized return codes: 0 for successful execution/validation, 1 for critical semantic errors (sanity check failures), and 2 for infrastructure misconfigurations or invalid filesystem target paths.
