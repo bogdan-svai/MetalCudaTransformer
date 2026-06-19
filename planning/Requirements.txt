@@ -112,25 +112,146 @@
 
 
 # -----------------------------------------------------------------------------
-# STAGE 6: Threadgroup Memory and Atomic Parity
+# STAGE 6: CUDA Symbol Graph, Device Functions, and Translation Registry
 # -----------------------------------------------------------------------------
 
 ## 6.1 Objectives
-* Support CUDA shared memory and a validated subset of atomic operations.
+* Replace kernel-only translation with a project-wide CUDA symbol model.
+* Translate user-defined device helpers, types, constants, and dependencies into reusable MSL declarations.
+* Establish a data-driven registry for known CUDA intrinsics without treating user functions as manually configured mappings.
 
 ## 6.2 Functional Requirements
-* REQ-6.1.1: Shared Memory Mapping
-  Static and dynamic shared allocations must map to Metal threadgroup memory with explicit byte-size metadata.
-* REQ-6.1.2: Typed Atomic Mapping
-  Supported atomic operations must be selected by value type and address space; unsupported combinations fail validation.
+* REQ-6.2.1: Typed Symbol IR
+  The frontend must represent functions, parameters, structs, typedefs, enums, constants, qualifiers, source locations, and translation-unit ownership as typed symbols.
+* REQ-6.2.2: CUDA Function Qualifiers
+  The compiler must distinguish `__global__`, `__device__`, `__host__`, and combined `__host__ __device__` functions. Device-callable functions must be emitted as MSL helpers; dual functions must remain available to transformed host code when required.
+* REQ-6.2.3: Device Call Graph
+  The frontend must construct a call graph rooted at translated kernels, include every reachable device helper exactly once, and diagnose missing, recursive, ambiguous, or unsupported calls.
+* REQ-6.2.4: Header and Type Lowering
+  Project headers, typedefs, structs, fixed arrays, compile-time constants, and supported preprocessor definitions must be preserved or lowered into valid host C++ and MSL declarations.
+* REQ-6.2.5: Multi-Translation-Unit Device Linking
+  Kernels and device helpers may be defined in separate `.cu` files. MCU must resolve their declarations and definitions into one deterministic Metal module while retaining source mapping.
+* REQ-6.2.6: Translation Registry
+  Known CUDA intrinsics must be described by source symbol, supported signatures, category, required capability, target representation, and a named lowering handler. Unsupported overloads must fail with structured diagnostics.
+* REQ-6.2.7: Build Symbol Manifest
+  Each build must emit a compiler-facing symbol manifest containing translated user functions, call edges, used intrinsics, source locations, and capabilities. Runtime-only routing metadata must remain separate.
 
-# STAGE 7: Asynchronous Streams
-* Preserve in-stream ordering and in-flight resource lifetime.
-* Expose stream creation, destruction, synchronization, and asynchronous copies.
+## 6.3 Acceptance Requirements
+* The CUDA SHA-256 helper chain must compile across headers and multiple `.cu` files.
+* Known SHA-256 vectors must match an independent CPU reference.
+* Missing device symbols and unsupported intrinsic signatures must report the original CUDA call site.
 
-# STAGE 8: Library Adapters
-* Introduce routing schema version 2 and an extensible CUDA-library adapter registry.
-* Map a validated cublasSgemm subset to MPSMatrixMultiplication.
 
-# STAGE 9: Stable Tooling API and IDE Integration
-* Freeze JSON contracts, diagnostic codes, capability reporting, and exit statuses.
+# -----------------------------------------------------------------------------
+# STAGE 7: NVCC-Compatible Driver and Existing Makefile Integration
+# -----------------------------------------------------------------------------
+
+## 7.1 Objectives
+* Allow existing CUDA build systems to invoke MCU without translating their Makefiles.
+* Produce native macOS executables from CUDA/C++ projects through compiler-like commands.
+
+## 7.2 Functional Requirements
+* REQ-7.2.1: NVCC Driver Shim
+  MCU must expose an `nvcc`-compatible driver entry point for the supported flag subset. `mcu make` must execute the existing build recipe with a temporary `nvcc` shim earlier in `PATH`.
+* REQ-7.2.2: Compiler Flag Compatibility
+  The driver must support input lists and the flags `-I`, `-D`, `-O0` through `-O3`, `-o`, `-c`, `-dc`, and `-Xcompiler` for validated host options. Unsupported flags must produce explicit diagnostics rather than being silently ignored.
+* REQ-7.2.3: MCU Intermediate Objects
+  Compile-only and relocatable-device-code invocations must emit versioned MCU object metadata. The final link invocation resolves MCU objects, native host objects, routing metadata, generated MSL, and runtime components into one executable.
+* REQ-7.2.4: Native Compiler Commands
+  The CLI must provide:
+    * `mcu compile <sources...> [flags] -o <executable>`;
+    * `mcu run <sources...> [flags] -- <program arguments...>`;
+    * `mcu make [-C directory] [make arguments...]`.
+* REQ-7.2.5: Existing Project Layout
+  Include paths, relative working directories, generated files, nested Makefiles, and output target names must retain the semantics expected by the original build recipe.
+* REQ-7.2.6: Incremental Build Cache
+  Unchanged frontend IR, Metal libraries, and runtime objects should be reused through content-addressed cache keys that include sources, headers, compiler flags, MCU version, and target SDK.
+
+## 7.3 Acceptance Requirements
+* An unchanged multi-file Makefile that invokes `nvcc -dc` must build through `mcu make`.
+* The resulting Mach-O executable must locate its Metal artifacts and run without Python or environment variables.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 8: Core CUDA Memory, Synchronization, and Atomic Parity
+# -----------------------------------------------------------------------------
+
+## 8.1 Objectives
+* Support the CUDA features required by reductions, hashing pipelines, and concurrent result selection.
+
+## 8.2 Functional Requirements
+* REQ-8.2.1: Threadgroup Memory
+  Static and dynamic `__shared__` declarations must map to Metal threadgroup memory with alignment, index, and byte-size metadata.
+* REQ-8.2.2: Typed Atomics
+  Supported forms of atomicAdd, atomicCAS, atomicMin, atomicMax, and atomicExch must be selected by value type and address space. Unsupported combinations must fail validation.
+* REQ-8.2.3: Barrier Semantics
+  Synchronization lowering must preserve threadgroup visibility and reject divergent barriers that cannot be executed safely.
+* REQ-8.2.4: Runtime Memory Operations
+  Add validated cudaMemset behavior and the additional synchronous memory-copy forms required by supported projects.
+* REQ-8.2.5: Local Arrays and Pointer Operations
+  Device code must support fixed local arrays, pointer offsets, supported casts, and byte-oriented operations required by hashing implementations.
+
+## 8.3 Acceptance Requirements
+* A shared-memory reduction must match a CPU reference.
+* A 20,000-thread atomic winner/counter test must complete without lost updates.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 9: Native CUDA Project Compatibility Milestone
+# -----------------------------------------------------------------------------
+
+## 9.1 Objectives
+* Demonstrate that MCU can build and run a representative CUDA project on macOS without source rewrites specific to Metal.
+
+## 9.2 Functional Requirements
+* REQ-9.2.1: Assignment-Scale Integration
+  A multi-file SHA-256, Merkle-tree, and Proof-of-Work project must build through `mcu make` using its existing CUDA-oriented Makefile.
+* REQ-9.2.2: Numerical and Byte-Level Equivalence
+  SHA-256 vectors, Merkle roots, selected nonces, and resulting block hashes must match independent CPU reference outputs exactly.
+* REQ-9.2.3: Native Execution Contract
+  The generated program must be a native macOS executable using Metal internally. It must accept the original command-line arguments and preserve expected input/output file behavior.
+* REQ-9.2.4: Performance Reporting
+  Verification must report translation time, native build time, JIT or library-load time, Merkle execution time, nonce-search time, and total runtime. Correctness thresholds and performance benchmarks must remain separate.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 10: Asynchronous Streams and Command Scheduling
+# -----------------------------------------------------------------------------
+
+## 10.1 Functional Requirements
+* REQ-10.1.1: Stream Lifecycle
+  Implement cudaStreamCreate, cudaStreamDestroy, and cudaStreamSynchronize.
+* REQ-10.1.2: Asynchronous Operations
+  Implement supported cudaMemcpyAsync and asynchronous kernel submission while preserving in-stream ordering.
+* REQ-10.1.3: In-Flight Resource Ownership
+  Buffers and pipeline resources must remain valid until every referencing command completes. cudaFree must not invalidate in-flight work.
+* REQ-10.1.4: Concurrency Contract
+  Independent streams may progress independently, but physical overlap is hardware-dependent and must be reported as a benchmark rather than guaranteed.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 11: CUDA Library Adapters and Apple Acceleration Frameworks
+# -----------------------------------------------------------------------------
+
+## 11.1 Functional Requirements
+* REQ-11.1.1: Adapter Registry
+  Introduce routing schema version 2 and an extensible registry separating CUDA library symbols from native Apple adapter implementations.
+* REQ-11.1.2: First MPS Adapter
+  Map a validated cublasSgemm subset to MPSMatrixMultiplication while preserving transpose, leading-dimension, alpha, beta, and status semantics.
+* REQ-11.1.3: Library Diagnostics
+  Unsupported library versions, symbols, data types, and modes must fail with source-mapped diagnostics.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 12: Stable Tooling API and IDE Integration
+# -----------------------------------------------------------------------------
+
+## 12.1 Functional Requirements
+* REQ-12.1.1: Stable JSON Contracts
+  Freeze versioned JSON output for check, compile, run, and make commands.
+* REQ-12.1.2: Capability Reporting
+  Expose a machine-readable report of supported CUDA syntax, runtime APIs, intrinsics, compiler flags, and library adapters.
+* REQ-12.1.3: Exit Status Contract
+  Exit status 0 means success, 1 means source or semantic failure, and 2 means infrastructure or invocation failure.
+* REQ-12.1.4: IDE Backend
+  Provide the stable backend contract required by a VS Code extension without coupling compiler components to editor-specific logic.

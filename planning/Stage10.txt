@@ -1,0 +1,28 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 10 - ASYNCHRONOUS STREAMS & COMMAND SCHEDULING
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVE
+Stage 10 replaces synchronous per-launch submission with an explicit scheduler
+while preserving CUDA ordering and resource lifetime rules.
+
+## 2. RUNTIME COMPONENTS
+* StreamRegistry owns stream handles and default-stream policy.
+* CommandScheduler owns pending command buffers and completion state.
+* ResourceTracker retains buffers, pipelines, and temporary argument storage.
+* SynchronizationService implements stream and device waits.
+
+## 3. FUNCTIONAL REQUIREMENTS
+* Implement cudaStreamCreate, cudaStreamDestroy, and cudaStreamSynchronize.
+* Implement supported cudaMemcpyAsync and asynchronous kernel submission.
+* Preserve command order within each stream.
+* Permit independent progress between streams without promising hardware overlap.
+* Prevent cudaFree from invalidating resources referenced by in-flight commands.
+* Propagate asynchronous Metal failures through the correct synchronization API.
+
+## 4. ACCEPTANCE
+* In-stream producer/consumer ordering is deterministic.
+* Independent streams do not introduce cross-stream ordering accidentally.
+* Device synchronization waits for every active stream.
+* Resource lifetime stress tests complete without use-after-free or leaks.
+* Overlap is reported as a benchmark and never used as a correctness assertion.

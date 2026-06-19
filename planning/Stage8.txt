@@ -1,15 +1,39 @@
-# STAGE 8 - CUDA LIBRARY ADAPTERS AND MPS
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 8 - CORE CUDA MEMORY, SYNCHRONIZATION & ATOMIC PARITY
+# -----------------------------------------------------------------------------
 
-## Scope
-* Add typed library-call IR and a registry of CUDA-to-Apple adapters.
-* Introduce routing schema version 2 with explicit compatibility validation.
-* Implement the first adapter: cublasSgemm to MPSMatrixMultiplication.
-* Preserve cuBLAS transpose, leading-dimension, alpha, beta, and status semantics.
+## 1. OBJECTIVE
+Stage 8 adds the CUDA primitives required by reductions, hashing pipelines, and
+concurrent winner selection after Stage 6 can translate full device call graphs.
 
-MPSMatrixMultiplication targets Apple GPU acceleration. This stage does not claim
-Neural Engine execution.
+## 2. THREADGROUP MEMORY
+* Static `__shared__ T value[N]` declarations must receive deterministic slots,
+  alignment, and byte sizes.
+* Supported dynamic shared memory must use launch-provided byte counts.
+* Runtime dispatch configures Metal threadgroup memory before kernel execution.
+* Shared storage must never be coarsened as private per-logical-thread storage.
 
-## Acceptance
-* A small GEMM, such as 128x128, matches an independent CPU reference.
-* A 2048x2048 case is a GPU smoke/performance benchmark, not a sequential CPU test.
-* Unsupported cuBLAS modes return structured compile-time diagnostics.
+## 3. ATOMIC REGISTRY
+Atomic lowering is selected by operation, value type, pointer address space, and
+Metal capability. Initial operations are atomicAdd, atomicCAS, atomicMin,
+atomicMax, and atomicExch for explicitly validated integer forms. Floating-point
+support is enabled only when target Metal semantics are equivalent.
+
+## 4. SYNCHRONIZATION AND BYTE OPERATIONS
+* `__syncthreads()` must preserve threadgroup memory visibility.
+* Divergent barriers that cannot complete safely become build errors.
+* Add validated cudaMemset and required synchronous copy variants.
+* Support fixed private arrays, byte buffers, pointer offsets, supported casts,
+  and local operations required by SHA-256 implementations.
+
+## 5. ROUTING METADATA
+Kernel routes may add backward-compatible threadgroup-memory descriptors with
+slot, alignment, element type, static or dynamic size, and source declaration.
+Schema compatibility must be validated by the runtime.
+
+## 6. ACCEPTANCE
+* A shared-memory reduction matches an independent CPU result.
+* A 20,000-thread atomic counter returns exactly 20,000.
+* A nonce winner selected through atomic operations is stable and valid.
+* SHA-256 device code using local arrays and byte operations remains exact.
+* Unsupported type/address-space combinations fail at the CUDA source location.

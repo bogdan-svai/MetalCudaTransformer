@@ -1,13 +1,58 @@
-# STAGE 6 - THREADGROUP MEMORY AND ATOMIC PARITY
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 6 - CUDA SYMBOL GRAPH, DEVICE FUNCTIONS & TRANSLATION REGISTRY
+# -----------------------------------------------------------------------------
 
-## Scope
-* Parse static and dynamic CUDA `__shared__` declarations into typed IR.
-* Generate MSL threadgroup bindings and routing memory-length metadata.
-* Configure threadgroup memory before dispatch.
-* Add a typed capability matrix for integer and floating-point CUDA atomics.
-* Translate supported atomics according to device/threadgroup address space.
+## 1. OBJECTIVE
+Stage 6 replaces kernel-only source mutation with a project-wide CUDA semantic
+model. MCU must understand reachable user-defined GPU functions and the types
+they require before lowering them to Metal.
 
-## Acceptance
-* Shared-memory reduction matches a CPU reference.
-* A 20,000-thread atomic counter returns exactly 20,000.
-* Unsupported atomic type/address combinations fail during validation.
+This stage does not implement shared memory, atomics, streams, or CUDA libraries.
+
+## 2. ARCHITECTURE
+
+  Sources + Headers -> CUDA Frontend -> Symbol IR -> Device Call Graph
+                                            |              |
+                              Translation Registry     Device Linker
+                                            |              |
+                                            +----> MSL Backend
+
+### 2.1 Typed IR
+The IR must represent:
+* translation units and source locations;
+* function declarations and definitions;
+* `__global__`, `__device__`, `__host__`, and `__host__ __device__` qualifiers;
+* parameters, return types, structs, typedefs, enums, constants, and fixed arrays;
+* function calls and symbol references;
+* required compiler capabilities and emitted target symbols.
+
+### 2.2 Translation Registry
+Known CUDA symbols use declarative descriptors containing source symbol,
+supported signatures, category, capability, target symbol, and lowering handler.
+Lowering handlers remain code and are referenced by stable identifiers.
+
+User-defined functions are never manually added to this registry. They are
+discovered by the frontend and emitted from the device call graph.
+
+## 3. FUNCTIONAL REQUIREMENTS
+* REQ-6.1: Build the device call graph from every kernel entry point.
+* REQ-6.2: Emit each reachable device helper once in deterministic dependency order.
+* REQ-6.3: Preserve dual host/device functions in both generated host and MSL code.
+* REQ-6.4: Resolve declarations and definitions across multiple `.cu` files.
+* REQ-6.5: Lower required structs, typedefs, constants, macros, and fixed arrays.
+* REQ-6.6: Preserve source mapping for helper declarations and bodies.
+* REQ-6.7: Emit `symbol_manifest.json` separately from runtime routing metadata.
+* REQ-6.8: Diagnose missing definitions, duplicate definitions, ambiguous overloads,
+  unsupported recursion, and unsupported intrinsic signatures.
+
+## 4. SYMBOL MANIFEST
+The manifest records user functions, call edges, used intrinsics, capabilities,
+source locations, and generated MSL names. It is a compiler artifact and must not
+be parsed by the runtime unless a future runtime feature explicitly requires it.
+
+## 5. ACCEPTANCE
+* A multi-file CUDA SHA-256 helper chain compiles into valid MSL.
+* Known SHA-256 test vectors match an independent CPU implementation.
+* `__host__ __device__` helpers remain callable from both execution domains.
+* Missing or unsupported symbols identify the original CUDA call site.
+* Stage 1-5 behavior and tests remain compatible.

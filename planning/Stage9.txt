@@ -1,13 +1,46 @@
-# STAGE 9 - STABLE TOOLING API AND IDE INTEGRATION
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 9 - NATIVE CUDA PROJECT COMPATIBILITY MILESTONE
+# -----------------------------------------------------------------------------
 
-## Scope
-* Freeze versioned JSON output for check and build commands.
-* Standardize diagnostic codes, source locations, and exit statuses.
-* Publish a machine-readable capability report.
-* Provide the backend contract required by a VS Code extension.
+## 1. OBJECTIVE
+Stage 9 proves that MCU can build and run a representative multi-file CUDA
+application on macOS without Metal-specific source changes.
 
-## Acceptance
-* stdout contains only JSON when `--json` is active.
-* Exit status 0 means success, 1 means source/semantic failure, and 2 means
-  infrastructure or invocation failure.
-* Contract fixtures detect accidental schema changes.
+The generated executable is native macOS code using Metal internally. It is not
+an NVIDIA CUDA binary and does not replace the official NVIDIA grading target.
+
+## 2. REFERENCE WORKLOAD
+The integration workload contains:
+* SHA-256 helpers split across headers and `.cu` files;
+* Merkle-tree construction with odd-node duplication;
+* parallel Proof-of-Work nonce search;
+* CUDA-oriented Makefile using compile and device-link steps;
+* command-line input and output files preserved by the native executable.
+
+## 3. CORRECTNESS CONTRACT
+* Standard SHA-256 vectors must match exactly.
+* Merkle roots must match the CPU implementation byte-for-byte.
+* Returned nonces must be within range and generate hashes below difficulty.
+* Final block hashes and output file formatting must match the reference.
+* Multiple valid nonces are accepted only according to the workload contract.
+
+## 4. USER WORKFLOW
+
+```text
+mcu make -C gpu_miner
+./gpu_miner test4
+```
+
+No manual extraction of generated Metal, runtime environment variable, or Python
+invocation is allowed after the build completes.
+
+## 5. METRICS
+Report frontend time, device-link time, Metal compilation time, native link time,
+cache hits, startup/library-load time, Merkle time, nonce-search time, and total
+runtime. Correctness gates must remain separate from performance scoring.
+
+## 6. ACCEPTANCE
+* The reference project builds through its existing Makefile using `mcu make`.
+* Public correctness inputs pass on Apple Silicon.
+* Clean and cached build timings are reported independently.
+* Failures identify unsupported CUDA behavior rather than emitting invalid MSL.

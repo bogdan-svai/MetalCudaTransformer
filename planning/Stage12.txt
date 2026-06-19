@@ -1,0 +1,34 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 12 - STABLE TOOLING API & IDE INTEGRATION
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVE
+Stage 12 freezes the machine-facing MCU contract and exposes compiler services to
+editor tooling without coupling compiler internals to a specific IDE.
+
+## 2. JSON CONTRACTS
+Versioned schemas are required for check, build, compile, run, make, diagnostics,
+capabilities, artifacts, cache events, and timing metrics. With `--json`, stdout
+contains exactly one JSON document and human logs use stderr when needed.
+
+## 3. CAPABILITY REPORT
+Expose supported CUDA syntax, types, qualifiers, intrinsics, runtime APIs, NVCC
+flags, architecture constraints, and library adapters. Each entry includes status,
+supported signatures, target requirements, and the stage that introduced it.
+
+## 4. PROCESS CONTRACT
+* Exit 0: successful operation.
+* Exit 1: source, semantic, translation, or native compilation failure.
+* Exit 2: invalid invocation, missing toolchain, filesystem, or infrastructure error.
+* Cancellation and timeout behavior must be explicit and machine-readable.
+
+## 5. IDE BACKEND
+Provide stable requests for project analysis, diagnostics, capability lookup,
+build progress, and source-map navigation. Transport may be subprocess JSON or a
+long-running service, but compiler packages must not import editor-specific code.
+
+## 6. ACCEPTANCE
+* Contract fixtures detect accidental schema changes.
+* Diagnostics remain stable across human and JSON output modes.
+* A reference VS Code client can analyze and build without parsing terminal text.
+* All Stage 1-11 command-line workflows remain available without an IDE.

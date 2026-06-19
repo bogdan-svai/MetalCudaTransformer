@@ -1,0 +1,34 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 11 - CUDA LIBRARY ADAPTERS & APPLE ACCELERATION
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVE
+Stage 11 adds explicit adapters for supported CUDA libraries after standalone
+CUDA projects already compile and run through MCU.
+
+## 2. ADAPTER ARCHITECTURE
+* LibraryCallIR represents resolved external calls and argument roles.
+* LibraryAdapterRegistry selects adapters by library, symbol, signature, and mode.
+* Runtime adapter implementations own Apple framework objects and dispatch.
+* Routing schema version 2 stores only runtime-required library call descriptors.
+
+Compiler translation rules and runtime routing remain separate registries.
+
+## 3. FIRST ADAPTER: CUBLAS SGEMM
+Support a validated cublasSgemm subset through MPSMatrixMultiplication, including
+transpose modes, M/N/K dimensions, leading dimensions, alpha, beta, buffer
+offsets, handle lifecycle, status values, and Stage 10 stream association.
+
+MPSMatrixMultiplication targets Apple GPU acceleration. Neural Engine execution
+is not claimed.
+
+## 4. SCHEMA MIGRATION
+Schema version 2 must reject incompatible artifacts clearly and provide an
+explicit migration path for version 1 kernel routes. Unknown adapter kinds fail
+before dispatch.
+
+## 5. ACCEPTANCE
+* A 128x128 SGEMM matches an independent CPU reference within documented epsilon.
+* A 2048x2048 case is a GPU smoke/performance benchmark, not a serial CPU test.
+* Unsupported data types, transpose modes, or library symbols are source-mapped.
+* Existing non-library kernels remain compatible after schema migration.

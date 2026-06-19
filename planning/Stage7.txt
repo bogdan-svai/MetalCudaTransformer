@@ -1,14 +1,51 @@
-# STAGE 7 - ASYNCHRONOUS STREAMS AND COMMAND SCHEDULING
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 7 - NVCC-COMPATIBLE DRIVER & MAKEFILE INTEGRATION
+# -----------------------------------------------------------------------------
 
-## Scope
-* Implement cudaStreamCreate, cudaStreamDestroy, and cudaStreamSynchronize.
-* Implement cudaMemcpyAsync for shared-buffer operations.
-* Introduce a command scheduler with explicit in-flight resource ownership.
-* Preserve CUDA ordering within a stream and permit independent stream progress.
+## 1. OBJECTIVE
+Stage 7 lets existing build systems invoke MCU as a compiler toolchain. MCU does
+not translate Makefiles; it executes their recipes and intercepts supported NVCC
+invocations through a temporary shim.
 
-Metal execution overlap is hardware-dependent and is measured as a benchmark,
-not promised as a correctness guarantee.
+## 2. BUILD FLOW
 
-## Acceptance
-* Per-stream ordering and cross-stream synchronization tests pass.
-* cudaFree cannot release a resource still referenced by in-flight work.
+  mcu make -> make -> temporary `nvcc` shim -> MCU driver
+                                             |-> compile `.mcuobj`
+                                             +-> link native Mach-O executable
+
+The original Makefile, working directory, include paths, defines, and output
+target names must remain authoritative.
+
+## 3. CLI CONTRACT
+* `mcu compile <sources...> [flags] -o <executable>` builds a native executable.
+* `mcu run <sources...> [flags] -- <arguments...>` builds and executes it.
+* `mcu make [-C directory] [make arguments...]` runs an existing Makefile.
+* An internal NVCC-driver mode accepts compile and link invocations from the shim.
+
+## 4. NVCC FLAG SUBSET
+The first supported set is `-I`, `-D`, `-O0` through `-O3`, `-o`, `-c`, `-dc`,
+and validated `-Xcompiler` host flags. Unsupported flags must fail explicitly.
+They must never be silently ignored when they can change program semantics.
+
+## 5. MCU INTERMEDIATE OBJECTS
+Compile-only invocations emit versioned `.mcuobj` artifacts containing:
+* source and flag fingerprints;
+* typed symbol and call-graph metadata;
+* transformed host compilation information;
+* device declarations needed by the final link;
+* dependency and source-map records.
+
+The link step combines MCU objects, supported native host objects, generated MSL,
+routing metadata, and runtime components into one application bundle layout.
+
+## 6. BUILD CACHE
+Cache keys include source contents, transitive headers, definitions, optimization
+flags, MCU version, Metal SDK, architecture, and runtime ABI. Corrupt or stale
+entries must be rejected safely.
+
+## 7. ACCEPTANCE
+* An unchanged nested Makefile invoking `nvcc -dc` builds via `mcu make`.
+* Relative includes and generated output paths behave as expected by the recipe.
+* The result is a native Mach-O executable that runs without Python or env vars.
+* Repeating an unchanged build reuses valid frontend, Metal, and runtime outputs.
+* Unsupported NVCC flags produce a structured command-line diagnostic.
