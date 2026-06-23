@@ -5,7 +5,9 @@ from core.backends.metal import transpile
 from core.build.artifacts import write_artifact
 from core.build.native import build_native
 from core.frontend.project_parser import parse_project
+from core.frontend.semantic import parse_semantic_project
 from core.passes.coarsening import plan_coarsening
+from core.passes.device_linker import build_device_link_plan
 from core.passes.validation import validate
 
 
@@ -39,6 +41,22 @@ class CompilerPipeline:
 
         metadata = parse_project(target, verbose=verbose)
         diagnostics = validate(metadata)
+        semantic = parse_semantic_project(metadata)
+        semantic_errors = [
+            item for item in semantic.diagnostics
+            if item.get("severity") == "error"
+        ]
+        requires_semantic = native or any(
+            function.get("kind") in {"DEVICE_FUNC", "HOST_DEVICE_FUNC"}
+            for function in metadata.get("functions", [])
+        )
+        if requires_semantic and not semantic.complete:
+            diagnostics.extend(semantic_errors)
+
+        link_plan = None
+        if semantic.project and semantic.complete:
+            link_plan = build_device_link_plan(semantic.project)
+            diagnostics.extend(link_plan.diagnostics)
         optimization = plan_coarsening(metadata, requested_factor=coarsening)
         diagnostics.extend(optimization["diagnostics"])
         if optimization["recovered_hardware_limit"]:
@@ -52,10 +70,20 @@ class CompilerPipeline:
             self._write(payload)
             return CommandResult(1, payload)
 
-        generated = transpile(metadata, coarsening_plans=optimization["plans"])
+        generated = transpile(
+            metadata,
+            coarsening_plans=optimization["plans"],
+            semantic_project=semantic.project if semantic.complete else None,
+            link_plan=link_plan,
+        )
         payload["build"] = {
             "metal_file": "generated.metal",
             "routing_table": "routing_table.txt",
+            "symbol_manifest": "symbol_manifest.json" if generated.get("symbol_manifest_text") else None,
+            "device_function_count": sum(
+                function.get("kind") in {"DEVICE_FUNC", "HOST_DEVICE_FUNC"}
+                for function in metadata.get("functions", [])
+            ),
             "translated_kernel_count": len(generated["routing_table"]["translated_kernels"]),
             "coarsening": {
                 "requested_factor": coarsening,
@@ -66,6 +94,8 @@ class CompilerPipeline:
             "generated.metal": generated["metal_source"],
             "routing_table.txt": generated["routing_table_text"],
         }
+        if generated.get("symbol_manifest_text"):
+            extras["symbol_manifest.json"] = generated["symbol_manifest_text"]
         self._write(payload, extras)
 
         if native:

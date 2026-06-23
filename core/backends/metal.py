@@ -2,6 +2,9 @@ import json
 import re
 
 from core.ir.models import BindingIR, KernelRouteIR
+from core.ir.symbols import manifest_text
+from core.backends.device import render_device_components, rewrite_kernel_calls
+from core.registry.catalog import default_registry
 
 
 GEOMETRY_ARGUMENTS = [
@@ -9,30 +12,21 @@ GEOMETRY_ARGUMENTS = [
     "uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]",
     "uint3 threads_per_threadgroup [[threads_per_threadgroup]]",
     "uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]]",
+    "uint3 threadgroups_per_grid [[threadgroups_per_grid]]",
 ]
 
-CUDA_TO_MSL_REPLACEMENTS = {
-    "__syncthreads()": "threadgroup_barrier(mem_flags::mem_threadgroup)",
-    "threadIdx.x": "thread_position_in_threadgroup.x",
-    "threadIdx.y": "thread_position_in_threadgroup.y",
-    "threadIdx.z": "thread_position_in_threadgroup.z",
-    "blockIdx.x": "threadgroup_position_in_grid.x",
-    "blockIdx.y": "threadgroup_position_in_grid.y",
-    "blockIdx.z": "threadgroup_position_in_grid.z",
-    "blockDim.x": "threads_per_threadgroup.x",
-    "blockDim.y": "threads_per_threadgroup.y",
-    "blockDim.z": "threads_per_threadgroup.z",
-    "gridDim.x": "threadgroups_per_grid.x",
-    "gridDim.y": "threadgroups_per_grid.y",
-    "gridDim.z": "threadgroups_per_grid.z",
-}
+CUDA_TO_MSL_REPLACEMENTS = default_registry().token_replacements()
 
 
-def transpile(metadata, coarsening_plans=None):
+def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=None):
     kernels = metadata.get("kernels", [])
     coarsening_plans = coarsening_plans or {}
     metal_functions = []
     translated = {}
+    declarations = []
+    helpers = []
+    if semantic_project and link_plan:
+        declarations, helpers = render_device_components(semantic_project, link_plan)
 
     for kernel in kernels:
         optimization = coarsening_plans.get(kernel["name"], default_optimization())
@@ -44,8 +38,13 @@ def transpile(metadata, coarsening_plans=None):
             "line": kernel.get("body_line") or kernel.get("line"),
         }
         factor = optimization["coarsening_factor"]
+        raw_body = kernel.get("body", "")
+        semantic_kernels = semantic_project.functions_named(kernel["name"]) if semantic_project else []
+        semantic_kernel = next((item for item in semantic_kernels if item.kind == "KERNEL"), None)
+        if semantic_kernel and link_plan:
+            raw_body = rewrite_kernel_calls(raw_body, semantic_kernel, link_plan)
         body = mutate_body(
-            kernel.get("body", ""),
+            raw_body,
             coarsening_factor=factor,
             source=source if factor > 1 else None,
         )
@@ -62,16 +61,21 @@ def transpile(metadata, coarsening_plans=None):
             source=source,
         ).to_dict()
 
-    metal_source = render_metal_source(metal_functions)
+    metal_source = render_metal_source(metal_functions, declarations=declarations, helpers=helpers)
     routing_table = {
         "schema_version": 1,
         "translated_kernels": translated,
     }
-    return {
+    result = {
         "metal_source": metal_source,
         "routing_table": routing_table,
         "routing_table_text": json.dumps(routing_table, indent=2, sort_keys=True),
     }
+    if semantic_project and link_plan:
+        manifest = link_plan.to_manifest(semantic_project)
+        result["symbol_manifest"] = manifest
+        result["symbol_manifest_text"] = manifest_text(manifest)
+    return result
 
 
 def translate_parameters(parameters):
@@ -201,10 +205,16 @@ def default_optimization():
     }
 
 
-def render_metal_source(functions):
+def render_metal_source(functions, declarations=None, helpers=None):
     header = [
         "#include <metal_stdlib>",
         "using namespace metal;",
         "",
     ]
-    return "\n".join(header + functions) + "\n"
+    sections = header
+    if declarations:
+        sections.extend(declarations + [""])
+    if helpers:
+        sections.extend(helpers + [""])
+    sections.extend(functions)
+    return "\n".join(sections) + "\n"

@@ -2,57 +2,259 @@
 # SYSTEM LAYER: STAGE 6 - CUDA SYMBOL GRAPH, DEVICE FUNCTIONS & TRANSLATION REGISTRY
 # -----------------------------------------------------------------------------
 
-## 1. OBJECTIVE
-Stage 6 replaces kernel-only source mutation with a project-wide CUDA semantic
-model. MCU must understand reachable user-defined GPU functions and the types
-they require before lowering them to Metal.
+## 1. CURRENT BASELINE
+Stage 5 is complete. MCU currently translates standalone `__global__` kernels,
+generates source-mapped MSL, builds a native macOS executable, and dispatches it
+through the modular Metal runtime.
 
-This stage does not implement shared memory, atomics, streams, or CUDA libraries.
+The current frontend still serializes mostly dictionary metadata and extracts
+function bodies with a regex-compatible scanner. The Metal backend translates
+kernel signatures and bodies, but it does not emit reachable `__device__`
+helpers, project types, or a device call graph.
 
-## 2. ARCHITECTURE
+## 2. OBJECTIVE
+Stage 6 replaces kernel-only mutation with a project-wide CUDA semantic model.
+MCU must translate user-defined GPU helpers, their required types and constants,
+and their cross-file dependencies into deterministic MSL.
 
-  Sources + Headers -> CUDA Frontend -> Symbol IR -> Device Call Graph
-                                            |              |
-                              Translation Registry     Device Linker
-                                            |              |
-                                            +----> MSL Backend
+This stage deliberately excludes:
+* Makefile/NVCC interception, which belongs to Stage 7;
+* shared memory and atomics, which belong to Stage 8;
+* streams and library adapters;
+* arbitrary C++ templates, virtual dispatch, exceptions, and recursion.
 
-### 2.1 Typed IR
-The IR must represent:
-* translation units and source locations;
-* function declarations and definitions;
-* `__global__`, `__device__`, `__host__`, and `__host__ __device__` qualifiers;
-* parameters, return types, structs, typedefs, enums, constants, and fixed arrays;
-* function calls and symbol references;
-* required compiler capabilities and emitted target symbols.
+## 3. PIPELINE
 
-### 2.2 Translation Registry
-Known CUDA symbols use declarative descriptors containing source symbol,
-supported signatures, category, capability, target symbol, and lowering handler.
-Lowering handlers remain code and are referenced by stable identifiers.
+  Sources + Headers + Compile Context
+                 |
+                 v
+       Semantic CUDA Frontend
+                 |
+                 v
+       Typed Project Symbol IR
+                 |
+      +----------+-----------+
+      |                      |
+ Device Call Graph    Translation Registry
+      |                      |
+ Address-Space Inference     |
+      +----------+-----------+
+                 |
+         Device Link Plan
+                 |
+                 v
+       Types + Helpers + Kernels
+                 |
+                 v
+          generated.metal
 
-User-defined functions are never manually added to this registry. They are
-discovered by the frontend and emitted from the device call graph.
+## 4. COMPONENT OWNERSHIP
 
-## 3. FUNCTIONAL REQUIREMENTS
-* REQ-6.1: Build the device call graph from every kernel entry point.
-* REQ-6.2: Emit each reachable device helper once in deterministic dependency order.
-* REQ-6.3: Preserve dual host/device functions in both generated host and MSL code.
-* REQ-6.4: Resolve declarations and definitions across multiple `.cu` files.
-* REQ-6.5: Lower required structs, typedefs, constants, macros, and fixed arrays.
-* REQ-6.6: Preserve source mapping for helper declarations and bodies.
-* REQ-6.7: Emit `symbol_manifest.json` separately from runtime routing metadata.
-* REQ-6.8: Diagnose missing definitions, duplicate definitions, ambiguous overloads,
-  unsupported recursion, and unsupported intrinsic signatures.
+### 4.1 Frontend
+The authoritative Stage 6 frontend uses semantic AST information for canonical
+types, declarations, qualifiers, overload resolution, and call edges. Regex
+metadata remains available for lightweight Stage 1 checks only.
 
-## 4. SYMBOL MANIFEST
-The manifest records user functions, call edges, used intrinsics, capabilities,
-source locations, and generated MSL names. It is a compiler artifact and must not
-be parsed by the runtime unless a future runtime feature explicitly requires it.
+Suggested ownership:
+* `core/frontend/cuda_ast.py`: translation-unit parsing and source extents;
+* `core/frontend/compile_context.py`: include paths, definitions, language mode;
+* `core/frontend/symbol_collector.py`: typed declaration collection.
 
-## 5. ACCEPTANCE
-* A multi-file CUDA SHA-256 helper chain compiles into valid MSL.
-* Known SHA-256 test vectors match an independent CPU implementation.
-* `__host__ __device__` helpers remain callable from both execution domains.
-* Missing or unsupported symbols identify the original CUDA call site.
-* Stage 1-5 behavior and tests remain compatible.
+If semantic parsing fails or required information is unavailable, native build
+must stop with `SemanticFrontendUnavailable` or `IncompleteSemanticIR`. It must
+not silently generate incomplete MSL from regex metadata.
+
+### 4.2 IR
+The typed IR must include:
+* `SymbolId`: stable identity from qualified name and canonical signature;
+* `TypeIR`: scalar, pointer, array, struct, enum, alias, and qualifiers;
+* `FunctionIR`: execution qualifiers, parameters, body extent, calls, source;
+* `TypeDeclarationIR`: structs, fields, aliases, enums, and constants;
+* `TranslationUnitIR`: source file, compile context, declarations, dependencies;
+* `CallEdgeIR`: caller, callee, call site, and inferred argument types;
+* `FunctionVariantIR`: one generated helper specialization;
+* `ProjectSymbolIR`: merged project-wide symbols and diagnostics.
+
+Compatibility dictionaries are produced only at serialization boundaries.
+Compiler passes must consume typed IR directly.
+
+### 4.3 Passes
+Suggested independent passes:
+* declaration merge and duplicate-definition validation;
+* kernel-rooted reachability analysis;
+* call graph cycle detection and topological ordering;
+* address-space inference and function specialization;
+* type dependency closure and deterministic declaration ordering;
+* intrinsic resolution through the translation registry;
+* device link planning and generated-name assignment.
+
+### 4.4 Backends
+The MSL backend receives a validated device link plan and emits, in order:
+1. Metal standard-library imports;
+2. required type aliases, enums, and structs;
+3. validated constants and expression macros;
+4. device helper variants in dependency order;
+5. kernel entry points and source directives.
+
+Host generation must remove device-only definitions while retaining valid
+`__host__ __device__` implementations for CPU calls.
+
+## 5. ADDRESS-SPACE MODEL
+CUDA allows pointer code that is less explicit than MSL. Every MSL pointer must
+have a valid address space:
+* kernel pointer arguments normally become `device` pointers;
+* read-only scalar bindings remain `constant` references;
+* local structs and arrays use `thread` storage;
+* Stage 8 will introduce `threadgroup` storage.
+
+Call graph nodes are specialized by address-space signature when required. For
+example, one CUDA helper called with both a device byte buffer and a local byte
+array may produce two deterministic MSL helper variants. An unresolved or unsafe
+combination produces `AmbiguousAddressSpace` at the original call site.
+
+## 6. TRANSLATION REGISTRY
+The registry is for known CUDA and device-runtime symbols, not user functions.
+Each rule contains:
+* source symbol and category;
+* supported canonical signatures;
+* required address spaces and target capabilities;
+* target symbol or named lowering handler;
+* headers or declarations required in generated MSL;
+* diagnostic code for unsupported overloads.
+
+Initial categories:
+* geometry and synchronization builtins already supported by MCU;
+* safe scalar/bitwise operations required by SHA-256;
+* selected byte operations such as a validated device-side memset lowering;
+* explicit unsupported entries for APIs deferred to later stages.
+
+Rules may be data-driven, but semantic transformations remain implemented as
+tested lowering handlers. Blind string replacement is not an accepted handler.
+
+## 7. PREPROCESSOR AND TYPE POLICY
+Stage 6 supports:
+* object-like compile-time constants;
+* expression-only function-like macros used by device code;
+* typedefs, enums, plain structs, fixed arrays, and standard integer aliases;
+* include guards and project-local headers.
+
+Token pasting, variadic device macros, compiler-dependent layout, unsupported
+templates, and dynamic polymorphism must produce explicit diagnostics.
+
+MSL struct layout must be checked against the originating host/CUDA layout when
+the type crosses a kernel binding. Internal thread-local structs only require
+consistent generated MSL layout.
+
+## 8. DEVICE LINKING
+The linker merges declarations from all translation units before code generation.
+It must:
+* select exactly one compatible definition for every reachable symbol;
+* reject incompatible duplicate declarations or definitions;
+* preserve internal/static translation-unit scope;
+* assign deterministic generated names for overloads and specializations;
+* emit helpers once in dependency order;
+* retain source mapping for every emitted declaration and function body.
+
+Recursive device call cycles are rejected in Stage 6 with `RecursiveDeviceCall`.
+
+## 9. SYMBOL MANIFEST
+Every successful build adds `symbol_manifest.json` to the artifact package:
+
+```json
+{
+  "schema_version": 1,
+  "translation_units": ["src/utils.cu", "src/sha256.cu"],
+  "symbols": {
+    "sha256_update(<signature>)": {
+      "kind": "device_function",
+      "generated_variants": ["sha256_update__thread_device"],
+      "source": {"file": "src/sha256.cu", "line": 72},
+      "calls": ["sha256_transform(<signature>)"]
+    }
+  },
+  "intrinsics_used": [],
+  "capabilities": ["device_functions", "fixed_local_arrays"]
+}
+```
+
+This is a compiler/debugging artifact. `routing_table.txt` remains restricted to
+runtime dispatch, binding, geometry, and later runtime library adapters.
+
+## 10. IMPLEMENTATION MILESTONES
+
+### 6A - Semantic Symbol IR
+* Add typed models and compile context.
+* Collect functions, types, qualifiers, declarations, and source locations.
+* Keep Stage 1-5 serialization compatible.
+
+### 6B - Call Graph and Device Link Plan
+* Resolve cross-file declarations and calls.
+* Compute kernel-rooted reachability, cycles, and deterministic ordering.
+* Emit the first symbol manifest.
+
+### 6C - Translation Registry
+* Add typed rule descriptors and handler lookup.
+* Migrate existing geometry/barrier replacements behind lowering handlers.
+* Add unsupported-signature diagnostics.
+
+### 6D - MSL Types and Device Helpers
+* Emit aliases, structs, constants, helper signatures, and helper bodies.
+* Infer pointer address spaces and create deterministic variants.
+* Preserve source mapping in helper diagnostics.
+
+### 6E - Multi-File SHA-256 Integration
+* Add a Stage 6 example with project headers and multiple `.cu` files.
+* Verify standard SHA-256 vectors against an independent CPU reference.
+* Compile generated MSL and run the native Metal executable.
+
+At most one milestone should change frontend, IR, and backend contracts without
+focused tests for those contracts.
+
+## 11. DIAGNOSTIC CODES
+Required structured codes include:
+* `SemanticFrontendUnavailable`;
+* `IncompleteSemanticIR`;
+* `MissingDeviceDefinition`;
+* `DuplicateDeviceDefinition`;
+* `AmbiguousDeviceOverload`;
+* `RecursiveDeviceCall`;
+* `UnsupportedDeviceType`;
+* `UnsupportedDeviceMacro`;
+* `UnsupportedIntrinsicSignature`;
+* `AmbiguousAddressSpace`;
+* `IncompatibleTypeLayout`.
+
+All diagnostics include source file, line, column when available, symbol ID, and
+the stage/pass that produced the failure.
+
+## 12. TEST MATRIX
+Unit tests:
+* typed symbol and canonical signature construction;
+* qualifier and type extraction;
+* call graph reachability, ordering, missing symbols, and cycles;
+* registry overload selection;
+* address-space specialization;
+* deterministic naming and manifest serialization.
+
+Integration tests:
+* helper in the same `.cu` file;
+* helper declared in a header and defined in another `.cu` file;
+* overloaded helpers with distinct canonical signatures;
+* `__host__ __device__` helper used from both domains;
+* structs, typedefs, constants, macros, and fixed local arrays;
+* source-mapped failure inside an emitted helper;
+* native multi-file SHA-256 correctness on Metal.
+
+Regression tests:
+* all Stage 1-5 tests;
+* Stage 4 numerical/coarsening runtime;
+* deterministic generated MSL and symbol manifest snapshots.
+
+## 13. EXIT CRITERIA
+Stage 6 is complete only when:
+* native builds use semantic symbol IR for all reachable device code;
+* reachable helpers and required types are emitted across translation units;
+* address-space variants are deterministic and verified by MSL compilation;
+* SHA-256 vectors execute correctly on Metal;
+* incomplete semantic information fails safely with source-mapped diagnostics;
+* `make verify` covers all Stage 1-6 contracts.

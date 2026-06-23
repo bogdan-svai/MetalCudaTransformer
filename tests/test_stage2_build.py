@@ -52,7 +52,12 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
     assert payload["build"]["translated_kernel_count"] == 1
 
     names, metal, routing, ast = read_build_artifacts()
-    assert names == {"ast_output.txt", "generated.metal", "routing_table.txt"}
+    assert names == {
+        "ast_output.txt",
+        "generated.metal",
+        "routing_table.txt",
+        "symbol_manifest.json",
+    }
     assert ast["command"] == "build"
     assert "kernel void scale_msl(" in metal
     assert "device float* values [[buffer(0)]]" in metal

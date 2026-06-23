@@ -78,4 +78,13 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo
   echo "== stage5 numeric regression runtime =="
   /usr/bin/time -p /tmp/mcu_stage4_verify/main
+
+  echo
+  echo "== stage6 multi-file SHA-256 native build =="
+  /usr/bin/time -p ./mcu build examples/stage6_sha256/app/main.cpp \
+    --native --output /tmp/mcu_stage6_verify
+
+  echo
+  echo "== stage6 SHA-256 Metal runtime =="
+  /usr/bin/time -p /tmp/mcu_stage6_verify/main
 fi

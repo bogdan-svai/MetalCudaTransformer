@@ -34,6 +34,8 @@ def emit(payload, as_json):
     artifact_contents = "ast_output.txt"
     if payload.get("build"):
         artifact_contents += ", generated.metal, routing_table.txt"
+        if payload["build"].get("symbol_manifest"):
+            artifact_contents += ", symbol_manifest.json"
         print(f"Translated kernels: {payload['build']['translated_kernel_count']}")
         for kernel, plan in payload["build"]["coarsening"]["plans"].items():
             if plan["coarsening_factor"] > 1:
@@ -65,6 +67,8 @@ def _stage_name(payload):
         return "Stage 1 check"
     native = payload.get("build", {}).get("native")
     if native:
+        if payload.get("build", {}).get("device_function_count", 0):
+            return "Stage 6 native build"
         return "Stage 5 native build"
     plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
     optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())

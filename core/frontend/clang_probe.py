@@ -54,14 +54,20 @@ def probe_with_clang(sources, read_text):
         with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False, encoding="utf-8") as handle:
             virtual_path = handle.name
             handle.write(CUDA_STUBS)
-            for source in sources:
+            ordered_sources = sorted(
+                sources,
+                key=lambda path: (Path(path).suffix not in {".h", ".hpp"}, Path(path).as_posix()),
+            )
+            for source in ordered_sources:
                 handle.write(f'\n#line 1 "{Path(source).as_posix()}"\n')
                 probe_source = rewrite_triple_chevrons(read_text(source))
                 for line in probe_source.splitlines():
-                    is_cuda_include = line.lstrip().startswith("#include") and (
+                    stripped = line.lstrip()
+                    is_local_include = stripped.startswith('#include "')
+                    is_cuda_include = stripped.startswith("#include") and (
                         "cuda_runtime.h" in line or "cuda.h" in line
                     )
-                    handle.write("\n" if is_cuda_include else line + "\n")
+                    handle.write("\n" if is_local_include or is_cuda_include else line + "\n")
         try:
             args = ["-x", "c++", "-std=c++17"]
             sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"

@@ -31,6 +31,11 @@ def build_native(metadata, build_output, output_directory, project_root):
 
     (output / "generated.metal").write_text(build_output["metal_source"], encoding="utf-8")
     (output / "routing_table.txt").write_text(build_output["routing_table_text"], encoding="utf-8")
+    if build_output.get("symbol_manifest_text"):
+        (output / "symbol_manifest.json").write_text(
+            build_output["symbol_manifest_text"],
+            encoding="utf-8",
+        )
 
     metal_command = [
         "xcrun",

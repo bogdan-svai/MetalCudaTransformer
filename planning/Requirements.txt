@@ -135,11 +135,18 @@
   Known CUDA intrinsics must be described by source symbol, supported signatures, category, required capability, target representation, and a named lowering handler. Unsupported overloads must fail with structured diagnostics.
 * REQ-6.2.7: Build Symbol Manifest
   Each build must emit a compiler-facing symbol manifest containing translated user functions, call edges, used intrinsics, source locations, and capabilities. Runtime-only routing metadata must remain separate.
+* REQ-6.2.8: Semantic Frontend Contract
+  Stage 6 symbol extraction must use a semantic AST frontend as the authoritative source for declarations, canonical types, qualifiers, overload resolution, and call edges. Regex scanning may remain a compatibility fallback for Stage 1 checks, but it must not silently produce a Stage 6 native build when semantic information is incomplete.
+* REQ-6.2.9: Address-Space Inference and Specialization
+  The compiler must infer whether every device pointer is backed by device, constant, threadgroup, or thread-local storage. When one CUDA helper is valid for multiple address-space signatures, MCU must emit deterministic specialized MSL variants or reject the ambiguous call with a source-mapped diagnostic.
+* REQ-6.2.10: Deterministic Symbol Identity
+  Symbol IDs and generated MSL names must be derived from qualified names, canonical signatures, qualifiers, and specialization context. Output ordering and names must remain stable across identical builds.
 
 ## 6.3 Acceptance Requirements
 * The CUDA SHA-256 helper chain must compile across headers and multiple `.cu` files.
 * Known SHA-256 vectors must match an independent CPU reference.
 * Missing device symbols and unsupported intrinsic signatures must report the original CUDA call site.
+* Stage 6 native builds must fail instead of falling back to incomplete regex metadata when semantic resolution is required.
 
 
 # -----------------------------------------------------------------------------

@@ -161,8 +161,17 @@ def extract_functions(path, text):
         close_brace = find_matching_brace(clean, open_brace)
         body = clean[open_brace + 1:close_brace]
         prefix = match.group("prefix")
-        kind = "KERNEL" if "__global__" in prefix else "MAIN_FUNC" if name == "main" else "HOST_FUNC"
-        if kind != "KERNEL" and re.search(r"\b(threadIdx|blockIdx|blockDim|gridDim)\b", body):
+        if "__global__" in prefix:
+            kind = "KERNEL"
+        elif "__device__" in prefix and "__host__" in prefix:
+            kind = "HOST_DEVICE_FUNC"
+        elif "__device__" in prefix:
+            kind = "DEVICE_FUNC"
+        elif name == "main":
+            kind = "MAIN_FUNC"
+        else:
+            kind = "HOST_FUNC"
+        if kind == "HOST_FUNC" and re.search(r"\b(threadIdx|blockIdx|blockDim|gridDim)\b", body):
             kind = "KERNEL"
         params = [normalize_expr(part) for part in split_top_level(match.group("params")) if part.strip()]
         functions.append(FunctionInfo(

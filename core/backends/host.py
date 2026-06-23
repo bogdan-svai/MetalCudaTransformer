@@ -6,10 +6,22 @@ TRIPLE_CHEVRON = re.compile(
     re.DOTALL,
 )
 GLOBAL_SIGNATURE = re.compile(r"\b__global__\s+[^;{}]+(?P<end>[;{])", re.MULTILINE)
+DEVICE_SIGNATURE = re.compile(
+    r"\b(?:(?:static|inline)\s+)*__device__\s+[^;{}]+(?P<end>[;{])",
+    re.MULTILINE,
+)
+HOST_DEVICE_MARKER = "MCU_HOST_DEVICE_QUALIFIER"
 
 
 def transform_host_source(text):
-    transformed = _remove_global_code(text)
+    transformed = re.sub(
+        r"(?:__host__\s+__device__|__device__\s+__host__)",
+        HOST_DEVICE_MARKER,
+        text,
+    )
+    transformed = _remove_qualified_code(transformed, GLOBAL_SIGNATURE)
+    transformed = _remove_qualified_code(transformed, DEVICE_SIGNATURE)
+    transformed = transformed.replace(HOST_DEVICE_MARKER, "")
     transformed = rewrite_triple_chevrons(transformed)
     transformed = re.sub(
         r'^\s*#\s*include\s*[<"](?:cuda_runtime\.h|cuda\.h)[>"]\s*$',
@@ -39,10 +51,10 @@ def has_host_code(text):
     return bool(meaningful.strip())
 
 
-def _remove_global_code(text):
+def _remove_qualified_code(text, pattern):
     output = []
     cursor = 0
-    for match in GLOBAL_SIGNATURE.finditer(text):
+    for match in pattern.finditer(text):
         if match.start() < cursor:
             continue
         output.append(text[cursor:match.start()])
