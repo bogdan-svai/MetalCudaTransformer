@@ -13,6 +13,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: python -m pip install pytest
-      - name: Run Stage 1-5 verification
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run Stage 1-6 verification
         run: make verify

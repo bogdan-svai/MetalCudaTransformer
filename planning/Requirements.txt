@@ -173,10 +173,18 @@
   Include paths, relative working directories, generated files, nested Makefiles, and output target names must retain the semantics expected by the original build recipe.
 * REQ-7.2.6: Incremental Build Cache
   Unchanged frontend IR, Metal libraries, and runtime objects should be reused through content-addressed cache keys that include sources, headers, compiler flags, MCU version, and target SDK.
+* REQ-7.2.7: Precompiled Runtime Metal Library
+  Normal native executables must load a linked `.metallib` and must not compile MSL source at startup. Runtime source compilation may exist only as an explicit diagnostic fallback.
+* REQ-7.2.8: Build Timing and Cache Metrics
+  Compile and make commands must report named frontend, device-link, Metal compile, host compile, native link, cache lookup, and total phases. Cold, warm, no-op, and incremental measurements must be distinguishable.
+* REQ-7.2.9: Dependency-Compatible Make Integration
+  The NVCC driver subset must support dependency-file options required for correct incremental Make builds and must preserve working-directory-relative paths and argument ordering.
 
 ## 7.3 Acceptance Requirements
 * An unchanged multi-file Makefile that invokes `nvcc -dc` must build through `mcu make`.
 * The resulting Mach-O executable must locate its Metal artifacts and run without Python or environment variables.
+* A normal run must perform zero runtime MSL source compilations.
+* The current small fixture must meet the documented Stage 7 cold, warm, no-op, incremental, and startup performance budgets.
 
 
 # -----------------------------------------------------------------------------

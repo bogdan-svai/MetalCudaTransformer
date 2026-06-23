@@ -6,6 +6,14 @@
 Stage 11 adds explicit adapters for supported CUDA libraries after standalone
 CUDA projects already compile and run through MCU.
 
+## 1.1 KNOWN PROBLEMS TO CLOSE
+* CUDA library calls currently fail validation and have no typed adapter IR.
+* CUDA and Accelerate/MPS may differ in layout, transpose, scalar, status, and
+  stream semantics; a name-to-name replacement is insufficient.
+* Creating MPS objects or temporary buffers per call can dominate small matrices.
+* Hidden host copies would preserve output while destroying expected GPU behavior,
+  so every adapter must report copies and temporary allocations.
+
 ## 2. ADAPTER ARCHITECTURE
 * LibraryCallIR represents resolved external calls and argument roles.
 * LibraryAdapterRegistry selects adapters by library, symbol, signature, and mode.
@@ -32,3 +40,13 @@ before dispatch.
 * A 2048x2048 case is a GPU smoke/performance benchmark, not a serial CPU test.
 * Unsupported data types, transpose modes, or library symbols are source-mapped.
 * Existing non-library kernels remain compatible after schema migration.
+
+## 6. PERFORMANCE BUDGET AND MEASUREMENT
+* Cache reusable MPS objects and temporary allocations where dimensions and stream
+  semantics permit; warmed calls must not recreate framework state unnecessarily.
+* Report adapter setup, host/device copies, queueing, GPU execution, and total time.
+* The 2048x2048 SGEMM benchmark must compare against a direct MPS baseline on the
+  same machine. MCU median GPU-plus-adapter time should be within 15% after warm-up.
+* The 128x128 fixture is a correctness and overhead test, not a peak-FLOPS claim.
+* Existing non-library kernel startup/build benchmarks may regress by at most 10%
+  after routing schema version 2 is introduced.

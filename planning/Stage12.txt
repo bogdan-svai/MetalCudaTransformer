@@ -6,6 +6,14 @@
 Stage 12 freezes the machine-facing MCU contract and exposes compiler services to
 editor tooling without coupling compiler internals to a specific IDE.
 
+## 1.1 KNOWN PROBLEMS TO CLOSE
+* Current human output is useful interactively but phase timings, cache events,
+  capabilities, and diagnostics are not a frozen machine-readable contract.
+* Repeated IDE checks would pay process and frontend startup unless a service or
+  reusable project state is introduced.
+* Schema stability can slow internal refactoring unless versioning and adapters
+  are owned at serialization boundaries.
+
 ## 2. JSON CONTRACTS
 Versioned schemas are required for check, build, compile, run, make, diagnostics,
 capabilities, artifacts, cache events, and timing metrics. With `--json`, stdout
@@ -32,3 +40,13 @@ long-running service, but compiler packages must not import editor-specific code
 * Diagnostics remain stable across human and JSON output modes.
 * A reference VS Code client can analyze and build without parsing terminal text.
 * All Stage 1-11 command-line workflows remain available without an IDE.
+
+## 7. PERFORMANCE BUDGET AND MEASUREMENT
+* Warm incremental analysis response for the current small fixture: p95 <= 0.10 s.
+* Capability lookup from a warm service/cache: p95 <= 0.02 s.
+* JSON serialization must consume <= 10% of total command time for normal build
+  responses; large diagnostics/artifacts are referenced rather than embedded.
+* A long-running backend must remain bounded during a 1,000-edit stress test and
+  report project-state/cache memory; no monotonic unbounded growth is accepted.
+* CLI commands retain Stage 7-11 timing gates. IDE transport is measured
+  separately from compiler work.

@@ -6,6 +6,20 @@
 Stage 8 adds the CUDA primitives required by reductions, hashing pipelines, and
 concurrent winner selection after Stage 6 can translate full device call graphs.
 
+## 1.1 INHERITED BASELINE
+Before Stage 8, the measured small-project baseline is 0.03-0.06 s translation,
+2.31-2.55 s clean native build, and 0.24 s for process startup, runtime JIT, and a
+small GPU workload. Stage 7 is responsible for incremental builds and removing
+normal-startup JIT; Stage 8 must preserve those improvements.
+
+## 1.2 KNOWN PROBLEMS TO CLOSE
+* `__shared__` storage has no IR ownership, layout, route, or runtime binding.
+* Atomics are not selected by canonical type and pointer address space.
+* Barrier validation does not yet prove uniform threadgroup participation.
+* Dynamic shared-memory byte counts are not propagated from launch to dispatch.
+* Contended atomics and barriers can be correct but much slower than Metal-native
+  patterns, so correctness and throughput need separate tests.
+
 ## 2. THREADGROUP MEMORY
 * Static `__shared__ T value[N]` declarations must receive deterministic slots,
   alignment, and byte sizes.
@@ -37,3 +51,16 @@ Schema compatibility must be validated by the runtime.
 * A nonce winner selected through atomic operations is stable and valid.
 * SHA-256 device code using local arrays and byte operations remains exact.
 * Unsupported type/address-space combinations fail at the CUDA source location.
+
+## 7. PERFORMANCE BUDGET AND MEASUREMENT
+* Stage 7 no-op and incremental build budgets must not regress by more than 15%
+  on fixtures that do not use Stage 8 features.
+* Report warmed GPU time separately from process/library-load time for reduction,
+  uncontended atomic, and contended atomic fixtures.
+* A 20,000-thread integer atomic counter should complete in <= 10 ms warmed on
+  the development machine; exact value and hardware identity must be recorded.
+* Shared-memory reduction is compared with both CPU reference and a Metal/CUDA
+  equivalent. No universal speedup is claimed, but a >20% regression requires a
+  profile and explanation before the stage exits.
+* Report threadgroup-memory bytes, occupancy-relevant launch geometry, command
+  submission time, GPU completion time, median, and p95.

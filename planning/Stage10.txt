@@ -6,6 +6,15 @@
 Stage 10 replaces synchronous per-launch submission with an explicit scheduler
 while preserving CUDA ordering and resource lifetime rules.
 
+## 1.1 KNOWN PROBLEMS TO CLOSE
+* The current runtime commits and waits synchronously per launch, preventing useful
+  CPU/GPU overlap and adding command-buffer latency to every kernel.
+* Resource lifetime is only simple while launches are synchronous; asynchronous
+  `cudaFree`, copies, and failures need explicit ownership and completion state.
+* Default-stream ordering and cross-stream behavior are not modeled.
+* Faster submission can hide failures until synchronization, so diagnostics must
+  retain the originating CUDA operation and stream.
+
 ## 2. RUNTIME COMPONENTS
 * StreamRegistry owns stream handles and default-stream policy.
 * CommandScheduler owns pending command buffers and completion state.
@@ -26,3 +35,15 @@ while preserving CUDA ordering and resource lifetime rules.
 * Device synchronization waits for every active stream.
 * Resource lifetime stress tests complete without use-after-free or leaks.
 * Overlap is reported as a benchmark and never used as a correctness assertion.
+
+## 5. PERFORMANCE BUDGET AND MEASUREMENT
+* Preserve Stage 7 startup and incremental-build budgets.
+* Report CPU submission cost per operation, command-buffer count, queue wait, GPU
+  execution, synchronization wait, and end-to-end throughput.
+* Batched asynchronous submission of 100 tiny kernels must reduce CPU-side
+  submission-plus-wait time by at least 25% versus the Stage 9 synchronous path
+  on the same machine, or profiling must identify the platform limit.
+* One stream must not be more than 10% slower than the prior synchronous path for
+  a single large kernel after warm-up.
+* Multi-stream overlap is measured but is not an acceptance requirement because
+  scheduling and physical overlap depend on the Apple GPU and workload.

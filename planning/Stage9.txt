@@ -9,6 +9,13 @@ application on macOS without Metal-specific source changes.
 The generated executable is native macOS code using Metal internally. It is not
 an NVIDIA CUDA binary and does not replace the official NVIDIA grading target.
 
+## 1.1 INHERITED BASELINE AND OPEN GAP
+Stage 6 proves one-block SHA-256 correctness, with a 2.31 s clean native build and
+0.24 s process/JIT/small-workload runtime. It does not yet prove a full Merkle
+tree, parallel nonce search, original Makefile compatibility, file I/O contract,
+or assignment-scale throughput. Stage 7 must supply Make integration/caching and
+Stage 8 must supply shared memory, barriers, and atomics before this stage closes.
+
 ## 2. REFERENCE WORKLOAD
 The integration workload contains:
 * SHA-256 helpers split across headers and `.cu` files;
@@ -39,8 +46,21 @@ Report frontend time, device-link time, Metal compilation time, native link time
 cache hits, startup/library-load time, Merkle time, nonce-search time, and total
 runtime. Correctness gates must remain separate from performance scoring.
 
+Required build budgets on the development machine:
+* unchanged Make build p95 <= 0.20 s when `make` has no work;
+* cached MCU relink p95 <= 0.50 s when no translation unit changed;
+* one changed CUDA translation unit p95 <= 1.50 s for the reference project;
+* clean reference-project build p95 <= 10.00 s;
+* precompiled-library startup before workload p95 <= 0.05 s.
+
+Merkle and nonce-search performance is reported as hashes/s and effective input
+bytes/s, with warm-up, median, p95, GPU model, difficulty, and search range. A
+fixed wall-clock target is not portable across Apple GPU models or difficulties.
+
 ## 6. ACCEPTANCE
 * The reference project builds through its existing Makefile using `mcu make`.
 * Public correctness inputs pass on Apple Silicon.
 * Clean and cached build timings are reported independently.
 * Failures identify unsupported CUDA behavior rather than emitting invalid MSL.
+* CPU/GPU transfer, command submission, GPU execution, and synchronization time
+  are measured independently so optimization work targets the actual bottleneck.
