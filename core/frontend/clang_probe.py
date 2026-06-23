@@ -28,7 +28,7 @@ CUDA_STUBS = "\n".join([
 ])
 
 
-def probe_with_clang(sources, read_text):
+def probe_with_clang(sources, read_text, compile_context=None):
     try:
         from clang.cindex import Config, Index
     except Exception as exc:
@@ -70,6 +70,11 @@ def probe_with_clang(sources, read_text):
                     handle.write("\n" if is_local_include or is_cuda_include else line + "\n")
         try:
             args = ["-x", "c++", "-std=c++17"]
+            context = compile_context or {}
+            for path in context.get("include_paths", []):
+                args.extend(["-I", path])
+            args.extend(f"-D{definition}" for definition in context.get("definitions", []))
+            args.extend(f"-U{name}" for name in context.get("undefinitions", []))
             sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
             resource_dir = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17"
             if os.path.isdir(sdk):

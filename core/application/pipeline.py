@@ -6,6 +6,7 @@ from core.build.artifacts import write_artifact
 from core.build.native import build_native
 from core.frontend.project_parser import parse_project
 from core.frontend.semantic import parse_semantic_project
+from core.metrics import BuildTimings
 from core.passes.coarsening import plan_coarsening
 from core.passes.device_linker import build_device_link_plan
 from core.passes.validation import validate
@@ -27,21 +28,49 @@ class CompilerPipeline:
         if not target.exists():
             return CommandResult(2, invalid_path_payload("check", path))
 
-        metadata = parse_project(target, verbose=verbose)
-        diagnostics = validate(metadata)
+        timings = BuildTimings()
+        with timings.phase("frontend"):
+            metadata = parse_project(target, verbose=verbose)
+            diagnostics = validate(metadata)
         has_errors = _has_errors(diagnostics)
         payload = self._base_payload("check", metadata, diagnostics, not has_errors)
+        payload["timings"] = timings.to_dict()
         self._write(payload)
         return CommandResult(1 if has_errors else 0, payload)
 
-    def build(self, path, verbose=False, coarsening=None, native=False, output=".mcu/build"):
-        target = Path(path)
-        if not target.exists():
-            return CommandResult(2, invalid_path_payload("build", path))
+    def build(
+        self,
+        path,
+        verbose=False,
+        coarsening=None,
+        native=False,
+        output=".mcu/build",
+        executable=None,
+        include_paths=None,
+        definitions=None,
+        undefinitions=None,
+        host_flags=None,
+        optimization="-O2",
+        command="build",
+        native_objects=None,
+    ):
+        inputs = list(path) if isinstance(path, (list, tuple)) else [path]
+        missing = next((item for item in inputs if not Path(item).exists()), None)
+        if missing is not None:
+            return CommandResult(2, invalid_path_payload(command, missing))
 
-        metadata = parse_project(target, verbose=verbose)
-        diagnostics = validate(metadata)
-        semantic = parse_semantic_project(metadata)
+        timings = BuildTimings()
+        parse_target = inputs if len(inputs) > 1 else inputs[0]
+        with timings.phase("frontend"):
+            metadata = parse_project(
+                parse_target,
+                verbose=verbose,
+                include_paths=include_paths,
+                definitions=definitions,
+                undefinitions=undefinitions,
+            )
+            diagnostics = validate(metadata)
+            semantic = parse_semantic_project(metadata)
         semantic_errors = [
             item for item in semantic.diagnostics
             if item.get("severity") == "error"
@@ -55,27 +84,31 @@ class CompilerPipeline:
 
         link_plan = None
         if semantic.project and semantic.complete:
-            link_plan = build_device_link_plan(semantic.project)
-            diagnostics.extend(link_plan.diagnostics)
-        optimization = plan_coarsening(metadata, requested_factor=coarsening)
-        diagnostics.extend(optimization["diagnostics"])
-        if optimization["recovered_hardware_limit"]:
+            with timings.phase("device_link"):
+                link_plan = build_device_link_plan(semantic.project)
+                diagnostics.extend(link_plan.diagnostics)
+        with timings.phase("optimization"):
+            coarsening_result = plan_coarsening(metadata, requested_factor=coarsening)
+        diagnostics.extend(coarsening_result["diagnostics"])
+        if coarsening_result["recovered_hardware_limit"]:
             diagnostics = [
                 item for item in diagnostics
                 if item["code"] != "HardwareLimitExceeded"
             ]
 
-        payload = self._base_payload("build", metadata, diagnostics, not _has_errors(diagnostics))
+        payload = self._base_payload(command, metadata, diagnostics, not _has_errors(diagnostics))
         if _has_errors(diagnostics):
+            payload["timings"] = timings.to_dict()
             self._write(payload)
             return CommandResult(1, payload)
 
-        generated = transpile(
-            metadata,
-            coarsening_plans=optimization["plans"],
-            semantic_project=semantic.project if semantic.complete else None,
-            link_plan=link_plan,
-        )
+        with timings.phase("codegen"):
+            generated = transpile(
+                metadata,
+                coarsening_plans=coarsening_result["plans"],
+                semantic_project=semantic.project if semantic.complete else None,
+                link_plan=link_plan,
+            )
         payload["build"] = {
             "metal_file": "generated.metal",
             "routing_table": "routing_table.txt",
@@ -87,7 +120,7 @@ class CompilerPipeline:
             "translated_kernel_count": len(generated["routing_table"]["translated_kernels"]),
             "coarsening": {
                 "requested_factor": coarsening,
-                "plans": optimization["plans"],
+                "plans": coarsening_result["plans"],
             },
         }
         extras = {
@@ -96,15 +129,20 @@ class CompilerPipeline:
         }
         if generated.get("symbol_manifest_text"):
             extras["symbol_manifest.json"] = generated["symbol_manifest_text"]
-        self._write(payload, extras)
 
         if native:
-            native_result = build_native(
-                metadata,
-                generated,
-                output_directory=output,
-                project_root=self.project_root,
-            )
+            with timings.phase("native_build"):
+                native_result = build_native(
+                    metadata,
+                    generated,
+                    output_directory=output,
+                    project_root=self.project_root,
+                    executable_path=executable,
+                    optimization=optimization,
+                    timings=timings,
+                    native_objects=native_objects,
+                    host_flags=host_flags,
+                )
             payload["build"]["native"] = native_result
             if not native_result["ok"]:
                 payload["ok"] = False
@@ -120,10 +158,12 @@ class CompilerPipeline:
                         "line": None,
                         "column": None,
                     })
+                payload["timings"] = timings.to_dict()
                 self._write(payload, extras)
                 return CommandResult(1, payload)
-            self._write(payload, extras)
 
+        payload["timings"] = timings.to_dict()
+        self._write(payload, extras)
         return CommandResult(0, payload)
 
     def _base_payload(self, command, metadata, diagnostics, ok):

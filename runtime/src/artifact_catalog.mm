@@ -1,5 +1,6 @@
 #include "runtime_internal.h"
 
+#include <cstdlib>
 #include <mach-o/dyld.h>
 #include <vector>
 
@@ -24,20 +25,26 @@ bool ArtifactCatalog::ensure(id<MTLDevice> device, std::string& error) {
         directory_ = executableDirectory();
     }
     NSString* directory = [NSString stringWithUTF8String:directory_.c_str()];
-    NSString* metalPath = [directory stringByAppendingPathComponent:@"generated.metal"];
+    NSString* libraryPath = [directory stringByAppendingPathComponent:@"generated.metallib"];
     NSString* routingPath = [directory stringByAppendingPathComponent:@"routing_table.txt"];
     NSError* nativeError = nil;
-    NSString* source = [NSString stringWithContentsOfFile:metalPath
-                                                  encoding:NSUTF8StringEncoding
-                                                     error:&nativeError];
-    if (!source) {
-        error = nativeError ? [[nativeError localizedDescription] UTF8String] : "Cannot load generated.metal";
-        return false;
-    }
-    library_ = [device newLibraryWithSource:source options:nil error:&nativeError];
+    NSURL* libraryURL = [NSURL fileURLWithPath:libraryPath];
+    library_ = [device newLibraryWithURL:libraryURL error:&nativeError];
     if (!library_) {
-        error = nativeError ? [[nativeError localizedDescription] UTF8String] : "MSL JIT compilation failed";
-        return false;
+        const char* allowJit = std::getenv("MCU_ALLOW_MSL_JIT");
+        if (!allowJit || std::string(allowJit) != "1") {
+            error = nativeError ? [[nativeError localizedDescription] UTF8String] : "Cannot load generated.metallib";
+            return false;
+        }
+        NSString* metalPath = [directory stringByAppendingPathComponent:@"generated.metal"];
+        NSString* source = [NSString stringWithContentsOfFile:metalPath
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:&nativeError];
+        library_ = source ? [device newLibraryWithSource:source options:nil error:&nativeError] : nil;
+        if (!library_) {
+            error = nativeError ? [[nativeError localizedDescription] UTF8String] : "MSL diagnostic JIT failed";
+            return false;
+        }
     }
     NSData* data = [NSData dataWithContentsOfFile:routingPath options:0 error:&nativeError];
     NSDictionary* root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&nativeError] : nil;
@@ -62,7 +69,13 @@ std::string ArtifactCatalog::executableDirectory() {
         return ".";
     }
     NSString* executable = [NSString stringWithUTF8String:path.data()];
-    return [[[executable stringByStandardizingPath] stringByDeletingLastPathComponent] UTF8String];
+    NSString* standardized = [executable stringByStandardizingPath];
+    NSString* sidecar = [standardized stringByAppendingString:@".mcu"];
+    NSString* sidecarLibrary = [sidecar stringByAppendingPathComponent:@"generated.metallib"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:sidecarLibrary]) {
+        return [sidecar UTF8String];
+    }
+    return [[standardized stringByDeletingLastPathComponent] UTF8String];
 }
 
 }  // namespace mcu::runtime

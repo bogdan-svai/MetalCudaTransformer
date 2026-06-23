@@ -4,11 +4,17 @@ from pathlib import Path
 
 from cli.arg_parser import build_parser
 from core.application.pipeline import CompilerPipeline
+from core.application.stage7 import execute_compile, execute_invocation, execute_make, execute_run
 from core.diagnostics.presenter import emit
+from core.driver import NvccInvocationError, parse_nvcc_arguments
+from core.version import MCU_VERSION
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
+    if argv and argv[0] in {"compile", "run", "make", "nvcc-driver"} and "--help" not in argv[1:]:
+        return _run_stage7(argv, parser)
     args = parser.parse_args(argv)
     pipeline = CompilerPipeline(project_root=Path(__file__).resolve().parent)
 
@@ -28,6 +34,53 @@ def main(argv=None):
 
     emit(result.payload, args.json)
     return result.exit_code
+
+
+def _run_stage7(argv, parser):
+    project_root = Path(__file__).resolve().parent
+    command = argv[0]
+    arguments = argv[1:]
+    as_json = "--json" in arguments
+    arguments = [item for item in arguments if item not in {"--json", "--verbose"}]
+    if arguments[:1] == ["--"]:
+        arguments = arguments[1:]
+
+    if command == "compile":
+        result = execute_compile(project_root, arguments)
+    elif command == "run":
+        compile_arguments, program_arguments = _split_run_arguments(arguments)
+        if "-o" not in compile_arguments and not any(item.startswith("-o") for item in compile_arguments):
+            source = next((Path(item) for item in compile_arguments if not item.startswith("-")), Path("mcu_run"))
+            output = Path.cwd() / ".mcu" / "run" / source.stem
+            compile_arguments.extend(["-o", str(output)])
+        result = execute_run(project_root, compile_arguments, program_arguments)
+    elif command == "make":
+        result = execute_make(project_root, arguments)
+    else:
+        if arguments in (["--version"], ["-V"]):
+            print(f"mcu nvcc compatibility driver {MCU_VERSION}")
+            return 0
+        try:
+            invocation = parse_nvcc_arguments(arguments)
+        except NvccInvocationError as exc:
+            from core.application.pipeline import CommandResult
+            result = CommandResult(2, {
+                "ok": False,
+                "command": "nvcc-driver",
+                "metadata": {},
+                "diagnostics": [exc.diagnostic()],
+            })
+        else:
+            result = execute_invocation(project_root, invocation, command="nvcc-driver")
+    emit(result.payload, as_json)
+    return result.exit_code
+
+
+def _split_run_arguments(arguments):
+    if "--" not in arguments:
+        return arguments, []
+    separator = arguments.index("--")
+    return arguments[:separator], arguments[separator + 1:]
 
 
 if __name__ == "__main__":

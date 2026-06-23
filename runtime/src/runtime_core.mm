@@ -1,5 +1,7 @@
 #include "runtime_internal.h"
 
+#include <cstdlib>
+#include <iostream>
 #include <mutex>
 
 namespace {
@@ -78,6 +80,10 @@ private:
     cudaError_t fail(cudaError_t error, const std::string& message) {
         last_error_ = error;
         last_message_ = message;
+        const char* diagnostics = std::getenv("MCU_RUNTIME_DIAGNOSTICS");
+        if (diagnostics && std::string(diagnostics) == "1") {
+            std::cerr << "MCU runtime: " << message << '\n';
+        }
         return error;
     }
 

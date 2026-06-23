@@ -52,7 +52,7 @@ def parse_semantic_project(metadata):
             virtual_path = handle.name
             handle.write(semantic_source)
         try:
-            translation_unit = index.parse(virtual_path, args=_clang_args(source_paths))
+            translation_unit = index.parse(virtual_path, args=_clang_args(source_paths, metadata))
             diagnostics.extend(_clang_diagnostics(translation_unit))
             project = _collect_project(
                 translation_unit.cursor,
@@ -109,8 +109,13 @@ def _build_semantic_source(source_paths):
     return "\n".join(preamble)
 
 
-def _clang_args(source_paths):
+def _clang_args(source_paths, metadata=None):
     args = ["-x", "c++", "-std=c++17"]
+    context = (metadata or {}).get("compile_context", {})
+    for directory in context.get("include_paths", []):
+        args.extend(["-I", directory])
+    args.extend(f"-D{definition}" for definition in context.get("definitions", []))
+    args.extend(f"-U{name}" for name in context.get("undefinitions", []))
     for directory in sorted({str(path.resolve().parent) for path in source_paths}):
         args.extend(["-I", directory])
     sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"

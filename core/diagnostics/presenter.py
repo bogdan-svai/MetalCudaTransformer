@@ -29,6 +29,22 @@ def emit(payload, as_json):
         label = ERROR if item["severity"] == "error" else WARNING
         print(f"{label} {format_location(item)}{item['message']}")
 
+    if payload.get("object"):
+        print(f"MCU object: {payload['object']['path']}")
+    if payload.get("make"):
+        if payload["make"].get("stdout"):
+            print(payload["make"]["stdout"], end="")
+        if payload["make"].get("stderr"):
+            print(payload["make"]["stderr"], end="")
+    if payload.get("program"):
+        if payload["program"].get("stdout"):
+            print(payload["program"]["stdout"], end="")
+        if payload["program"].get("stderr"):
+            print(payload["program"]["stderr"], end="")
+    timings = payload.get("timings", {}).get("phases_seconds", {})
+    if timings:
+        print(f"Time: {timings.get('total', 0):.3f}s")
+
     if not payload.get("artifact"):
         return
     artifact_contents = "ast_output.txt"
@@ -63,6 +79,8 @@ def format_location(item):
 
 
 def _stage_name(payload):
+    if payload.get("command") in {"compile", "run", "make", "nvcc-driver"}:
+        return f"Stage 7 {payload['command']}"
     if payload.get("command") != "build":
         return "Stage 1 check"
     native = payload.get("build", {}).get("native")

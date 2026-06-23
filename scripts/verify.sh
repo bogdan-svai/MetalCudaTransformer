@@ -87,4 +87,26 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo
   echo "== stage6 SHA-256 Metal runtime =="
   /usr/bin/time -p /tmp/mcu_stage6_verify/main
+
+  echo
+  echo "== stage7 MCU object compile =="
+  STAGE7_DIR="$(mktemp -d)"
+  MCU_CACHE_DIR="$STAGE7_DIR/cache" /usr/bin/time -p ./mcu compile -dc \
+    examples/stage4_numeric/main.cu -MMD -MF "$STAGE7_DIR/numeric.d" \
+    -o "$STAGE7_DIR/numeric.o"
+
+  echo
+  echo "== stage7 object link and precompiled metallib =="
+  MCU_CACHE_DIR="$STAGE7_DIR/cache" /usr/bin/time -p ./mcu compile \
+    "$STAGE7_DIR/numeric.o" -o "$STAGE7_DIR/numeric"
+  test -f "$STAGE7_DIR/numeric.mcu/generated.metallib"
+
+  echo
+  echo "== stage7 no-op build timing =="
+  MCU_CACHE_DIR="$STAGE7_DIR/cache" /usr/bin/time -p ./mcu compile \
+    "$STAGE7_DIR/numeric.o" -o "$STAGE7_DIR/numeric"
+
+  echo
+  echo "== stage7 native runtime without MSL JIT =="
+  /usr/bin/time -p "$STAGE7_DIR/numeric"
 fi

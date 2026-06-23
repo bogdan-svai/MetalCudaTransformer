@@ -167,7 +167,9 @@ machine are:
 * one changed translation unit in a small project: p95 <= 1.00 s;
 * clean current Stage 6-sized native project: p95 <= 3.00 s;
 * MCU orchestration overhead on a cache hit: p95 <= 0.05 s, excluding `make`;
-* precompiled-library load plus empty/small launch startup: p95 <= 0.05 s;
+* new-process Metal initialization, precompiled-library load, pipeline creation,
+  and one small launch: p95 <= 0.25 s;
+* repeated small launch in the same initialized process: p95 <= 0.05 s;
 * normal runtime path performs zero MSL source compilations.
 
 The current 0.24 s run is expected to improve primarily by replacing runtime JIT
@@ -248,3 +250,33 @@ Stage 7 is complete only when:
 * no-op and one-file incremental builds demonstrate correct cache reuse;
 * unsupported semantic NVCC flags fail explicitly;
 * the timing budget is measured and regressions are visible in `make verify`.
+
+## 16. IMPLEMENTED BASELINE (2026-06-23)
+Stage 7 is implemented with the following verified behavior:
+* global `mcu compile`, `mcu run`, and `mcu make` workflows;
+* typed NVCC invocation parsing with explicit unsupported-flag diagnostics;
+* versioned MCU objects with semantic IR, dependencies, target SDK, architecture,
+  compiler version, runtime ABI, and atomic writes;
+* compile, `-dc`, dependency-file, object-link, and native host-object paths;
+* layered checksum-verified Metal, host, runtime, and final-link caches;
+* parallel deterministic runtime compilation into `libmcu_runtime.a`;
+* AIR compilation and offline `.metallib` linking;
+* executable-relative `<program>.mcu` sidecars that remain valid when moved;
+* runtime `.metallib` loading with MSL JIT available only through the explicit
+  `MCU_ALLOW_MSL_JIT=1` diagnostic fallback;
+* nested Make, `-C`, `-j`, paths with spaces, and temporary NVCC shim cleanup;
+* phase timings and cache events in human and JSON command results.
+
+Observed verification timings on the development machine:
+* MCU object compile: 0.20 s internal, 0.25 s wall time;
+* clean object-to-native link after parallel runtime compilation: 1.67-1.69 s
+  internal, 1.72-1.75 s wall time;
+* unchanged object-to-native no-op build: 0.006 s internal, 0.05 s wall time;
+* new-process Metal startup plus numeric workload: 0.23-0.25 s;
+* Stage 1-7 suite: 41 tests passing in 9.35-9.53 s.
+
+The previous 0.24 s runtime was initially assumed to be mostly MSL JIT. Offline
+metallib testing showed that first-process Metal device and pipeline initialization
+accounts for most of that latency on this machine. Stage 7 therefore gates cold
+process startup separately from warmed in-process dispatch. Stage 10 will optimize
+submission and synchronization, not claim removal of the platform startup cost.

@@ -94,7 +94,10 @@ def discover_sources(entry_path):
 
 
 def _is_ignored_source(path):
-    return any(part in IGNORED_SOURCE_DIRECTORIES for part in path.parts)
+    return any(
+        part in IGNORED_SOURCE_DIRECTORIES or part.endswith(".mcu")
+        for part in path.parts
+    )
 
 
 def _source_root(entry):

@@ -56,4 +56,13 @@ def build_parser():
         default=".mcu/build",
         help="Native build directory (used with --native)",
     )
+
+    for name, help_text in [
+        ("compile", "Compile CUDA/C++ inputs into an MCU object or native executable"),
+        ("run", "Compile and run a native CUDA-to-Metal executable"),
+        ("make", "Run an existing Makefile through the temporary MCU NVCC shim"),
+        ("nvcc-driver", "Internal NVCC-compatible driver entry point"),
+    ]:
+        command = subcommands.add_parser(name, help=help_text)
+        command.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser
