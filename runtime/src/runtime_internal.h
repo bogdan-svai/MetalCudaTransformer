@@ -6,10 +6,15 @@
 #include "cuda_to_metal.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
 namespace mcu::runtime {
+
+void recordRuntimeMetric(const char* phase, double seconds);
+void incrementRuntimeCounter(const char* name, std::uint64_t amount = 1);
+void setRuntimeDeviceName(const char* name);
 
 class DeviceContext {
 public:

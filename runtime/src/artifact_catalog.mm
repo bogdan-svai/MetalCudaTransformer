@@ -1,6 +1,7 @@
 #include "runtime_internal.h"
 
 #include <cstdlib>
+#include <chrono>
 #include <mach-o/dyld.h>
 #include <vector>
 
@@ -21,6 +22,7 @@ bool ArtifactCatalog::ensure(id<MTLDevice> device, std::string& error) {
     if (library_ && routing_) {
         return true;
     }
+    auto started = std::chrono::steady_clock::now();
     if (directory_.empty()) {
         directory_ = executableDirectory();
     }
@@ -53,6 +55,10 @@ bool ArtifactCatalog::ensure(id<MTLDevice> device, std::string& error) {
         return false;
     }
     routing_ = root;
+    recordRuntimeMetric(
+        "artifact_load",
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+    );
     return true;
 }
 

@@ -201,6 +201,7 @@ def execute_make(project_root, make_arguments, artifact_path="mcu_artifacts.zip"
     root = Path(project_root).resolve()
     with tempfile.TemporaryDirectory(prefix="mcu-nvcc-") as temporary:
         shim = Path(temporary) / "nvcc"
+        metrics_log = Path(temporary) / "driver_metrics.jsonl"
         shim.write_text(
             "#!/usr/bin/env bash\n"
             f"exec {shlex.quote(sys.executable)} {shlex.quote(str(root / 'mcu'))} nvcc-driver -- \"$@\"\n",
@@ -209,6 +210,7 @@ def execute_make(project_root, make_arguments, artifact_path="mcu_artifacts.zip"
         shim.chmod(0o755)
         environment = os.environ.copy()
         environment["PATH"] = temporary + os.pathsep + environment.get("PATH", "")
+        environment["MCU_DRIVER_METRICS_LOG"] = str(metrics_log)
         command = ["make", *make_arguments]
         with timings.phase("make"):
             try:
@@ -221,6 +223,7 @@ def execute_make(project_root, make_arguments, artifact_path="mcu_artifacts.zip"
                 )
             except OSError as exc:
                 return _error_result("make", _diagnostic("MakeInvocationFailed", str(exc)), 2)
+        driver_invocations = _read_driver_metrics(metrics_log)
     ok = process.returncode == 0
     diagnostics = [] if ok else [_diagnostic(
         "MakeInvocationFailed",
@@ -236,9 +239,22 @@ def execute_make(project_root, make_arguments, artifact_path="mcu_artifacts.zip"
             "exit_code": process.returncode,
             "stdout": process.stdout,
             "stderr": process.stderr,
+            "driver_invocations": driver_invocations,
         },
         "timings": timings.to_dict(),
     })
+
+
+def _read_driver_metrics(path):
+    if not path.is_file():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
 
 
 def _link_inputs(invocation):

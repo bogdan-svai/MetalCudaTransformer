@@ -244,6 +244,22 @@
   The generated program must be a native macOS executable using Metal internally. It must accept the original command-line arguments and preserve expected input/output file behavior.
 * REQ-9.2.4: Performance Reporting
   Verification must report translation time, native build time, JIT or library-load time, Merkle execution time, nonce-search time, and total runtime. Correctness thresholds and performance benchmarks must remain separate.
+* REQ-9.2.5: Repository-Owned Oracle Fixture
+  CI must use a self-contained multi-translation-unit fixture and an independent CPU oracle. External coursework or private repositories may be audited manually but must not be CI dependencies.
+* REQ-9.2.6: Build Compatibility Matrix
+  Verification must cover clean Make builds, separate device compilation, final link, unchanged/no-op invocation, cached relink, and invalidation after one CUDA translation unit changes.
+* REQ-9.2.7: Deterministic Execution
+  At least five executions of one native artifact must produce identical non-timing output fields and byte-identical SHA-256, Merkle root, nonce, and final hash results.
+* REQ-9.2.8: Opt-In Runtime Metrics
+  Native executables must optionally emit a versioned JSON sidecar containing device initialization, artifact loading, pipeline creation/cache, memory-copy, command-submission, GPU-execution, synchronization, byte-count, dispatch-count, and process-total measurements without changing application stdout.
+* REQ-9.2.9: Scope Integrity
+  Stage 9 compatibility work must remain independent of any one application algorithm. Missing CUDA semantics must produce source-mapped diagnostics and be implemented in their owning semantic stage rather than patched into the reference workload.
+
+## 9.3 Acceptance Requirements
+* The repository fixture must build through `mcu make` without source edits.
+* Public fixture inputs must match an independent CPU oracle exactly.
+* The executable must run without Python, MSL JIT, or mandatory environment variables.
+* Runtime metric collection must be opt-in, schema-versioned, and covered by a native test.
 
 
 # -----------------------------------------------------------------------------

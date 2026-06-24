@@ -1,5 +1,7 @@
 #include "runtime_internal.h"
 
+#include <chrono>
+
 namespace mcu::runtime {
 
 void PipelineCache::reset() {
@@ -15,8 +17,10 @@ id<MTLComputePipelineState> PipelineCache::get(
     std::string key = [entry UTF8String];
     auto cached = pipelines_.find(key);
     if (cached != pipelines_.end()) {
+        incrementRuntimeCounter("pipeline_cache_hits");
         return cached->second;
     }
+    auto started = std::chrono::steady_clock::now();
     id<MTLFunction> function = [library newFunctionWithName:entry];
     if (!function) {
         error = "Metal entry point was not found";
@@ -29,6 +33,11 @@ id<MTLComputePipelineState> PipelineCache::get(
         return nil;
     }
     pipelines_[key] = pipeline;
+    incrementRuntimeCounter("pipeline_cache_misses");
+    recordRuntimeMetric(
+        "pipeline_creation",
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+    );
     return pipeline;
 }
 

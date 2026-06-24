@@ -3,66 +3,150 @@
 # -----------------------------------------------------------------------------
 
 ## 1. OBJECTIVE
-Stage 9 proves that MCU can build and run a representative multi-file CUDA
-application on macOS without Metal-specific source changes.
+Stage 9 turns the Stage 8 feature set into a reproducible project-level proof.
+MCU must build and run a representative multi-file CUDA application on macOS
+without Metal-specific source changes, then compare its output with an
+independent CPU oracle.
 
-The generated executable is native macOS code using Metal internally. It is not
-an NVIDIA CUDA binary and does not replace the official NVIDIA grading target.
+The generated executable is native macOS code backed by Metal. It is not an
+NVIDIA binary and does not replace validation on the official CUDA target.
 
-## 1.1 INHERITED BASELINE AND OPEN GAP
-Stage 7 provides Make/NVCC integration, MCU objects, offline metallib loading, and
-incremental caching. Its observed small clean build is 1.72-1.75 s, no-op build is
-0.05 s, and cold process plus small GPU workload is 0.22-0.25 s. Stage 8 must
-prove original-style SHA helpers, Merkle kernels, nonce atomics, shared memory,
-barriers, and runtime memory operations before this stage begins full application
-compatibility validation.
+## 2. SCOPE AND BOUNDARIES
+Stage 9 adds compatibility validation and observability, not new CUDA language
+semantics. Streams, warp intrinsics, graphs, library adapters, and algorithm-
+specific performance transformations remain in later stages.
 
-## 2. REFERENCE WORKLOAD
-The integration workload contains:
-* SHA-256 helpers split across headers and `.cu` files;
-* Merkle-tree construction with odd-node duplication;
-* parallel Proof-of-Work nonce search;
-* CUDA-oriented Makefile using compile and device-link steps;
-* command-line input and output files preserved by the native executable.
+The repository-owned fixture is authoritative for CI. External projects such as
+the ASC gpu_miner are manual compatibility consumers and must never be required
+to clone or expose private coursework in CI.
 
-## 3. CORRECTNESS CONTRACT
+## 3. DELIVERY PHASES
+
+### 9A. Contract and independent oracle
+* Add a repository-owned SHA-256, Merkle-tree, and nonce-search project.
+* Split headers, device helpers, kernels, and host code across translation units.
+* Use Python's standard SHA-256 implementation as an independent oracle.
+* Store deterministic public inputs and compare digests byte-for-byte.
+
+### 9B. Build-system compatibility matrix
+* Build through the existing CUDA-oriented Makefile using `mcu make`.
+* Exercise separate `-dc` compilation and final device/native link.
+* Verify clean, unchanged/no-op, relink, and one-translation-unit-change builds.
+* Preserve `-I`, `-D`, optimization, dependency files, output names, and sidecars.
+
+### 9C. Native execution equivalence
+* Preserve command-line arguments, working-directory behavior, input files,
+  output files, exit status, stdout, and stderr.
+* Verify SHA-256 leaves, odd-node Merkle duplication, smallest valid nonce, and
+  final block hash against the CPU oracle.
+* Repeat execution five times and require deterministic non-timing fields.
+
+### 9D. Runtime observability
+* Keep program stdout unchanged.
+* When `MCU_METRICS_FILE` is set, write a versioned JSON sidecar at process exit.
+* Report device initialization, artifact loading, pipeline creation/cache use,
+  unified-memory copies, command submission, GPU execution, synchronization,
+  dispatch count, transferred bytes, and total process time.
+* Normal execution must not require this environment variable.
+
+### 9E. Build and execution report
+* Produce a versioned JSON verification report containing build modes, phase
+  timings, cache events, runtime metrics, correctness results, and machine data.
+* Keep correctness failures separate from performance observations.
+* Report cold/warm samples, minimum, median, and p95 where repeated measurements
+  are meaningful.
+
+### 9F. External-consumer audit
+* Build the external gpu_miner from a clean tree using its existing Makefile.
+* Run all available public inputs from the working directory expected by it.
+* Record unsupported behavior as compiler diagnostics, never invalid MSL.
+* Keep its results in a manual report because the source is outside this repo.
+
+## 4. CORRECTNESS CONTRACT
 * Standard SHA-256 vectors must match exactly.
-* Merkle roots must match the CPU implementation byte-for-byte.
-* Returned nonces must be within range and generate hashes below difficulty.
-* Final block hashes and output file formatting must match the reference.
-* Multiple valid nonces are accepted only according to the workload contract.
+* Merkle roots must match the CPU oracle byte-for-byte, including odd leaves.
+* The returned nonce must be the smallest valid nonce in the configured range.
+* The final block hash must satisfy the configured target and match the oracle.
+* Output field names and hexadecimal formatting must be stable.
+* Five runs of one executable must produce identical correctness fields.
 
-## 4. USER WORKFLOW
+## 5. USER WORKFLOW
 
 ```text
-mcu make -C gpu_miner compile
-./gpu_miner/miner tests/test4.in
+mcu make -C examples/stage9_project clean compile
+(cd examples/stage9_project && ./miner inputs/test1.in)
 ```
 
-No manual extraction of generated Metal, runtime environment variable, or Python
-invocation is allowed after the build completes.
+For the external assignment whose executable accepts a test name rather than a
+path, the corresponding workflow is:
 
-## 5. METRICS
-Report frontend time, device-link time, Metal compilation time, native link time,
-cache hits, startup/library-load time, Merkle time, nonce-search time, and total
-runtime. Correctness gates must remain separate from performance scoring.
+```text
+mcu make -C gpu_miner clean compile
+(cd gpu_miner && ./miner test4)
+```
 
+No extraction of generated Metal, runtime MSL JIT, Python process, or runtime
+environment variable is required after build completion.
+
+## 6. PERFORMANCE CONTRACT
 Required build budgets on the development machine:
-* unchanged Make build p95 <= 0.20 s when `make` has no work;
-* cached MCU relink p95 <= 0.50 s when no translation unit changed;
-* one changed CUDA translation unit p95 <= 1.50 s for the reference project;
+* unchanged Make build p95 <= 0.20 s when Make has no work;
+* cached MCU relink p95 <= 0.50 s when inputs are unchanged;
+* one changed CUDA translation unit p95 <= 1.50 s;
 * clean reference-project build p95 <= 10.00 s;
-* cold process/device/pipeline startup before workload p95 <= 0.25 s;
-* warmed in-process library/pipeline dispatch overhead p95 <= 0.05 s.
+* cold device/library/pipeline startup p95 <= 0.25 s;
+* warmed in-process dispatch overhead p95 <= 0.05 s.
 
-Merkle and nonce-search performance is reported as hashes/s and effective input
-bytes/s, with warm-up, median, p95, GPU model, difficulty, and search range. A
-fixed wall-clock target is not portable across Apple GPU models or difficulties.
+Merkle and nonce performance is reported with input size, search range, GPU
+model, warm-up, minimum, median, and p95. Fixed workload thresholds are not
+portable across Apple GPU models and are observations until Stage 14.
 
-## 6. ACCEPTANCE
-* The reference project builds through its existing Makefile using `mcu make`.
-* Public correctness inputs pass on Apple Silicon.
-* Clean and cached build timings are reported independently.
-* Failures identify unsupported CUDA behavior rather than emitting invalid MSL.
-* CPU/GPU transfer, command submission, GPU execution, and synchronization time
-  are measured independently so optimization work targets the actual bottleneck.
+## 7. ACCEPTANCE
+* The repository fixture builds through `mcu make` and separate MCU objects.
+* Its native executable runs without Python and without runtime MSL compilation.
+* Every correctness field matches the independent oracle for all public inputs.
+* Five repeated executions are deterministic.
+* Runtime metrics use schema version 1 and do not contaminate application output.
+* Clean, cached, no-op, and incremental build paths are tested independently.
+* The complete regression suite remains green on macOS; non-Metal systems skip
+  only native execution while retaining oracle and driver tests.
+
+## 8. BASELINE AT STAGE ENTRY
+* Stage 8 regression suite: 68 passing tests.
+* Stage 7 unchanged driver link: approximately 0.05 s locally.
+* External gpu_miner reaches a native Metal build without source rewrites.
+* External test1 completes correctly; test3 is deterministic but exposes a nonce
+  performance bottleneck reserved for measurement here and optimization later.
+
+## 9. IMPLEMENTATION REPORT - 2026-06-24
+Implemented:
+* a repository-owned multi-file CUDA project with an unchanged NVCC-oriented
+  Makefile, three separately compiled objects, four kernels, cross-unit SHA-256
+  helpers, Merkle reduction, atomic smallest-nonce selection, and native CLI I/O;
+* two deterministic public inputs and an independent Python `hashlib` oracle;
+* exact SHA-256 leaf, odd/even Merkle, nonce, and final-block-hash comparison;
+* five-run deterministic native verification integrated into `make verify`;
+* per-driver JSON timing capture inside `mcu make` without changing Make output;
+* schema-versioned opt-in native runtime metrics for device/artifact/pipeline,
+  memory bytes, command submit, GPU execution, wait time, cache use, and total;
+* a standalone `scripts/verify_stage9.py` report for clean, no-op, incremental,
+  correctness, runtime, machine identity, samples, median, and p95;
+* transformed include-path mirroring so host compilation selects lowered CUDA
+  headers rather than originals containing CUDA-only qualifiers.
+
+Observed on Apple M4 Max during final development verification:
+* complete suite: 70 tests passed;
+* clean fixture build: 1.30-2.13 s depending on runtime/compiler cache warmth;
+* unchanged Make build: approximately 0.057-0.059 s p95;
+* one changed CUDA translation unit: approximately 0.35-0.54 s;
+* six-dispatch test1 GPU execution: approximately 3.2 ms;
+* warm native wall time: approximately 0.024-0.031 s;
+* all documented build, startup, and dispatch-overhead budgets passed.
+* forced external gpu_miner rebuild: 4 kernels, 2.20 s through its Makefile;
+* external gpu_miner test1 from its required working directory: success in 0.06 s.
+* external gpu_miner test3: deterministic hashes/nonces, Merkle 0.04502 s,
+  nonce 31.13557 s, workload total 31.18060 s, and 31.20 s process wall time.
+
+Stage 9 is complete for the documented Stage 8 CUDA subset. This milestone does
+not claim arbitrary CUDA compatibility; unsupported streams, warp operations,
+graphs, libraries, and advanced memory models remain assigned to later stages.

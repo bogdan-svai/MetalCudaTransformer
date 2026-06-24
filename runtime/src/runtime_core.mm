@@ -1,6 +1,7 @@
 #include "runtime_internal.h"
 
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
 #include <mutex>
 
@@ -20,6 +21,7 @@ public:
 
     cudaError_t allocate(void** output, std::size_t size) {
         std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         if (!output || size == 0) {
             return fail(cudaErrorInvalidValue, "cudaMalloc requires non-null output and non-zero size");
         }
@@ -35,30 +37,43 @@ public:
 
     cudaError_t release(void* pointer) {
         std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         std::string error;
         return buffers_.release(pointer, error) ? succeed() : fail(cudaErrorInvalidValue, error);
     }
 
     cudaError_t copy(void* dst, const void* src, std::size_t count, cudaMemcpyKind kind) {
         std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         if ((!dst || !src) && count != 0) {
             return fail(cudaErrorInvalidValue, "cudaMemcpy received a null pointer");
         }
         std::string error;
-        return buffers_.copy(dst, src, count, kind, error)
-            ? succeed()
-            : fail(cudaErrorInvalidValue, error);
+        auto started = std::chrono::steady_clock::now();
+        bool copied = buffers_.copy(dst, src, count, kind, error);
+        mcu::runtime::recordRuntimeMetric(
+            "memory_copy",
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+        );
+        mcu::runtime::incrementRuntimeCounter("memory_copy_bytes", count);
+        return copied ? succeed() : fail(cudaErrorInvalidValue, error);
     }
 
     cudaError_t fill(void* dst, int value, std::size_t count) {
         std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         if (!dst && count != 0) {
             return fail(cudaErrorInvalidValue, "cudaMemset received a null pointer");
         }
         std::string error;
-        return buffers_.fill(dst, value, count, error)
-            ? succeed()
-            : fail(cudaErrorInvalidValue, error);
+        auto started = std::chrono::steady_clock::now();
+        bool filled = buffers_.fill(dst, value, count, error);
+        mcu::runtime::recordRuntimeMetric(
+            "memory_fill",
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+        );
+        mcu::runtime::incrementRuntimeCounter("memory_fill_bytes", count);
+        return filled ? succeed() : fail(cudaErrorInvalidValue, error);
     }
 
     cudaError_t dispatchKernel(
@@ -70,6 +85,7 @@ public:
         std::size_t shared_bytes
     ) {
         std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         if (!kernel_name || !*kernel_name || grid.x == 0 || grid.y == 0 || grid.z == 0 ||
             block.x == 0 || block.y == 0 || block.z == 0) {
             return fail(cudaErrorInvalidValue, "Kernel name and launch dimensions must be non-zero");

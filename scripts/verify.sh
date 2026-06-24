@@ -127,4 +127,9 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo
   echo "== stage8 generic helper-to-shared atomic runtime =="
   /usr/bin/time -p /tmp/mcu_stage8_generic_verify/main
+
+  echo
+  echo "== stage9 project compatibility and runtime metrics =="
+  /usr/bin/time -p python scripts/verify_stage9.py --samples 5 \
+    --output /tmp/mcu_stage9_report.json
 fi

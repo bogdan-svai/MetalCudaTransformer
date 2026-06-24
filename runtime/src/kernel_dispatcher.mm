@@ -1,5 +1,7 @@
 #include "runtime_internal.h"
 
+#include <chrono>
+
 namespace mcu::runtime {
 
 cudaError_t KernelDispatcher::dispatch(
@@ -74,6 +76,7 @@ cudaError_t KernelDispatcher::dispatch(
         return cudaErrorInvalidValue;
     }
 
+    auto submission_started = std::chrono::steady_clock::now();
     id<MTLCommandBuffer> command = [context.queue() commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     [encoder setComputePipelineState:pipeline];
@@ -98,7 +101,22 @@ cudaError_t KernelDispatcher::dispatch(
              threadsPerThreadgroup:physical];
     [encoder endEncoding];
     [command commit];
+    recordRuntimeMetric(
+        "command_submission",
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - submission_started).count()
+    );
+    auto wait_started = std::chrono::steady_clock::now();
     [command waitUntilCompleted];
+    recordRuntimeMetric(
+        "synchronization_wait",
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - wait_started).count()
+    );
+    CFTimeInterval gpu_start = [command GPUStartTime];
+    CFTimeInterval gpu_end = [command GPUEndTime];
+    if (gpu_end >= gpu_start && gpu_start > 0.0) {
+        recordRuntimeMetric("gpu_execution", gpu_end - gpu_start);
+    }
+    incrementRuntimeCounter("kernel_dispatches");
     if ([command status] == MTLCommandBufferStatusError) {
         NSString* description = [[command error] localizedDescription];
         error = description ? [description UTF8String] : "Metal command failed";

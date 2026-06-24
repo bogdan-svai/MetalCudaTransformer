@@ -101,6 +101,7 @@ def build_native(
         timings,
         compile_context,
         host_flags,
+        transformed.get("include_paths", []),
     )
     if not host_result["ok"]:
         return host_result
@@ -270,7 +271,7 @@ def _build_runtime_library(root, cache, output, optimization, timings):
 
 def _build_host_objects(
     sources, headers, object_directory, runtime_include, host_directory, cache,
-    optimization, timings, compile_context, host_flags,
+    optimization, timings, compile_context, host_flags, transformed_include_paths,
 ):
     objects = []
     header_hashes = [(str(path), _file_hash(path)) for path in headers]
@@ -301,6 +302,7 @@ def _build_host_objects(
         command = [
             "xcrun", "clang++", "-std=c++17", "-fobjc-arc", optimization,
             "-I", str(runtime_include), "-I", str(host_directory),
+            *[item for path in transformed_include_paths for item in ("-I", path)],
             *[item for path in compile_context.get("include_paths", []) for item in ("-I", path)],
             *[f"-D{value}" for value in compile_context.get("definitions", [])],
             *[f"-U{value}" for value in compile_context.get("undefinitions", [])],
@@ -346,7 +348,20 @@ def _transform_host_sources(source_paths, host_directory):
         destination.parent.mkdir(parents=True, exist_ok=True)
         _write_if_changed(destination, transformed)
         host_sources.append(destination)
-    return {"sources": host_sources, "headers": headers, "source_root": source_root}
+    include_paths = []
+    for source in source_paths:
+        if source.suffix not in HEADER_EXTENSIONS:
+            continue
+        candidate = host_directory / source.parent.relative_to(source_root)
+        value = str(candidate)
+        if value not in include_paths:
+            include_paths.append(value)
+    return {
+        "sources": host_sources,
+        "headers": headers,
+        "source_root": source_root,
+        "include_paths": include_paths,
+    }
 
 
 def _build_key(
