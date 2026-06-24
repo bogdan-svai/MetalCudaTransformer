@@ -23,6 +23,14 @@ def plan_coarsening(metadata, requested_factor=None):
         needs_optimization = bool(requested_factor and requested_factor > 1) or any(
             _volume(block) > THREADGROUP_LIMIT for block in known_blocks
         )
+        synchronized = "__shared__" in kernel.get("body", "") or "__syncthreads" in kernel.get("body", "")
+        if synchronized and needs_optimization:
+            diagnostics.append(_diagnostic(
+                "CoarseningSharedKernelUnsupported",
+                f"Kernel '{name}' uses shared memory or barriers and cannot be coarsened safely.",
+                launches[0] if launches else kernel,
+            ))
+            continue
 
         if len(unique_blocks) > 1 and needs_optimization:
             diagnostics.append(_diagnostic(

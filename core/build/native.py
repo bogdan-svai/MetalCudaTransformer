@@ -30,6 +30,7 @@ def build_native(
     timings=None,
     native_objects=None,
     host_flags=None,
+    native_link_flags=None,
 ):
     output = Path(output_directory).resolve()
     host_directory = output / "host"
@@ -48,10 +49,12 @@ def build_native(
     source_paths = [Path(name).resolve() for name in metadata.get("sources", [])]
     native_objects = [Path(path).resolve() for path in (native_objects or [])]
     host_flags = list(host_flags or [])
+    native_link_flags = list(native_link_flags or [])
     compile_context = metadata.get("compile_context", {})
     build_key = _build_key(
         source_paths, native_objects, build_output, optimization, executable, root,
         compile_context, host_flags,
+        native_link_flags,
     )
     if _is_noop_build(manifest_path, build_key, executable, output):
         if timings:
@@ -109,6 +112,7 @@ def build_native(
         *[str(path) for path in host_result["objects"]],
         *[str(path) for path in native_objects],
         str(runtime_result["library"]),
+        *native_link_flags,
         "-framework",
         "Foundation",
         "-framework",
@@ -270,11 +274,16 @@ def _build_host_objects(
 ):
     objects = []
     header_hashes = [(str(path), _file_hash(path)) for path in headers]
+    runtime_header_hashes = [
+        (str(path.name), _file_hash(path))
+        for path in sorted(Path(runtime_include).glob("*.h"))
+    ]
     for index, source in enumerate(sources):
         object_path = object_directory / f"host_{index}.o"
         key = fingerprint({
             "source": source.read_text(encoding="utf-8"),
             "headers": header_hashes,
+            "runtime_headers": runtime_header_hashes,
             "optimization": optimization,
             "architecture": platform.machine(),
             "runtime_abi": RUNTIME_ABI,
@@ -342,7 +351,7 @@ def _transform_host_sources(source_paths, host_directory):
 
 def _build_key(
     source_paths, native_objects, build_output, optimization, executable, root,
-    compile_context, host_flags,
+    compile_context, host_flags, native_link_flags,
 ):
     runtime_files = sorted((root / "runtime").rglob("*"))
     return fingerprint({
@@ -357,6 +366,7 @@ def _build_key(
         "native_pipeline": 2,
         "compile_context": compile_context,
         "host_flags": host_flags,
+        "native_link_flags": native_link_flags,
         "toolchain": _toolchain_identity(),
         "runtime_sources": [
             (str(path.relative_to(root)), _file_hash(path))

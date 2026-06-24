@@ -1,0 +1,43 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 13 - WARP/SIMDGROUP SEMANTICS & CUDA GRAPHS
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVE
+Stage 13 adds execution-model features that must exist before final optimization:
+CUDA warp collectives and reusable CUDA Graph scheduling. These are compatibility
+features, not benchmark-only rewrites.
+
+## 2. WARP/SIMDGROUP MODEL
+* Represent active lanes, logical CUDA warp IDs, lane IDs, masks, and convergence
+  explicitly in IR.
+* Query and record Metal `threadExecutionWidth`; never assume Apple SIMD width is
+  CUDA-compatible without a validated target capability.
+* Support a typed initial subset of shuffle, ballot, any/all, lane-mask, and
+  `__syncwarp` behavior.
+* Preserve CUDA's 32-lane logical warp contract through direct simdgroup mapping
+  only on equivalent targets; otherwise reject or use a tested emulation.
+* Reject divergent/partial-mask cases whose CUDA semantics cannot be preserved.
+
+## 3. CUDA GRAPH MODEL
+* Build typed graph nodes for kernels, copies, memset, dependencies, and supported
+  host boundaries.
+* Implement graph creation, capture, instantiation, launch, update subset, and
+  destruction over the Stage 10 stream scheduler.
+* Validate DAG acyclicity, resource lifetime, parameter ownership, and replay
+  ordering before native command encoding.
+* Replays must avoid repeated translation and redundant scheduler construction.
+
+## 4. TESTS
+* Warp collectives match CPU lane-level oracles for full and supported partial
+  masks, divergent branches, and boundary lanes.
+* Unsupported target widths and masks fail with source-mapped diagnostics.
+* Graph DAG ordering, fan-in/fan-out, repeated launch, update, and destruction are
+  deterministic and leak-free.
+* Graph and non-graph execution produce identical numerical/byte results.
+* Stage 1-12 behavior and metrics remain regression-gated.
+
+## 5. EXIT CRITERIA
+* Supported warp code has an explicit CUDA-to-Metal semantic proof and tests.
+* Supported CUDA Graphs replay through the scheduler without source changes.
+* Capability reporting distinguishes native, emulated, and unsupported behavior.
+* Performance is measured but not yet used to weaken correctness contracts.

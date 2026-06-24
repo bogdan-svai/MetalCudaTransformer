@@ -52,6 +52,8 @@ class LaunchInfo:
     line: int
     grid_expr: str
     block_expr: str
+    shared_expr: str = "0"
+    stream_expr: str = "0"
     args: list[str] = field(default_factory=list)
     syntax: str = "cudaLaunch"
     grid: dict = field(default_factory=dict)
@@ -64,6 +66,8 @@ class LaunchInfo:
             "line": self.line,
             "grid_expr": self.grid_expr,
             "block_expr": self.block_expr,
+            "shared_expr": self.shared_expr,
+            "stream_expr": self.stream_expr,
             "args": self.args,
             "syntax": self.syntax,
             "grid": self.grid,

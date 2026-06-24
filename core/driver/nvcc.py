@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import shlex
 
 
@@ -41,6 +42,8 @@ class NvccInvocation:
     optimization: str = "-O2"
     optimization_explicit: bool = False
     host_flags: list[str] = field(default_factory=list)
+    library_paths: list[str] = field(default_factory=list)
+    libraries: list[str] = field(default_factory=list)
     dependency_mode: str | None = None
     dependency_file: str | None = None
     dependency_target: str | None = None
@@ -66,6 +69,8 @@ class NvccInvocation:
             "optimization": self.optimization,
             "optimization_explicit": self.optimization_explicit,
             "host_flags": self.host_flags,
+            "library_paths": self.library_paths,
+            "libraries": self.libraries,
             "dependency_mode": self.dependency_mode,
             "dependency_file": self.dependency_file,
             "dependency_target": self.dependency_target,
@@ -108,6 +113,13 @@ def parse_nvcc_arguments(arguments, working_directory=None):
             invocation.host_flags.extend(_validated_host_flags(value))
         elif argument.startswith("-Xcompiler="):
             invocation.host_flags.extend(_validated_host_flags(argument.split("=", 1)[1]))
+        elif argument in {"-L", "-l"}:
+            value, index = _next_value(arguments, index, argument)
+            _append_link_option(invocation, argument, value, cwd)
+        elif argument.startswith("-L") and len(argument) > 2:
+            _append_link_option(invocation, "-L", argument[2:], cwd)
+        elif argument.startswith("-l") and len(argument) > 2:
+            _append_link_option(invocation, "-l", argument[2:], cwd)
         elif argument in DEPENDENCY_FLAGS:
             invocation.dependency_mode = argument
         elif argument in VALUE_FLAGS:
@@ -135,6 +147,11 @@ def parse_nvcc_arguments(arguments, working_directory=None):
     if not invocation.inputs:
         raise NvccInvocationError("InvalidNvccInvocation", "NVCC invocation has no input files.")
     invocation.mode = "device_compile" if device_compile else "compile" if compile_only else "link"
+    if invocation.mode != "link" and (invocation.library_paths or invocation.libraries):
+        raise NvccInvocationError(
+            "InvalidNvccInvocation",
+            "Library search and link flags are valid only during an NVCC link invocation.",
+        )
     if invocation.mode != "link" and len(invocation.sources) != 1:
         raise NvccInvocationError(
             "InvalidNvccInvocation",
@@ -179,3 +196,13 @@ def _validated_host_flags(value):
                 flag,
             )
     return flags
+
+
+def _append_link_option(invocation, flag, value, cwd):
+    if flag == "-L":
+        path = Path(value)
+        invocation.library_paths.append(str((cwd / path).resolve() if not path.is_absolute() else path.resolve()))
+        return
+    if not re.match(r"^[A-Za-z0-9_+.-]+$", value):
+        raise NvccInvocationError("UnsupportedNvccFlag", f"Invalid library name: {value}", value)
+    invocation.libraries.append(value)

@@ -50,12 +50,24 @@ public:
             : fail(cudaErrorInvalidValue, error);
     }
 
+    cudaError_t fill(void* dst, int value, std::size_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!dst && count != 0) {
+            return fail(cudaErrorInvalidValue, "cudaMemset received a null pointer");
+        }
+        std::string error;
+        return buffers_.fill(dst, value, count, error)
+            ? succeed()
+            : fail(cudaErrorInvalidValue, error);
+    }
+
     cudaError_t dispatchKernel(
         const char* kernel_name,
         dim3 grid,
         dim3 block,
         const mcu::KernelArgument* arguments,
-        std::size_t argument_count
+        std::size_t argument_count,
+        std::size_t shared_bytes
     ) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!kernel_name || !*kernel_name || grid.x == 0 || grid.y == 0 || grid.z == 0 ||
@@ -68,13 +80,19 @@ public:
         }
         cudaError_t result = mcu::runtime::KernelDispatcher::dispatch(
             context_, buffers_, artifacts_, pipelines_, kernel_name, grid, block,
-            arguments, argument_count, error
+            arguments, argument_count, shared_bytes, error
         );
         return result == cudaSuccess ? succeed() : fail(result, error);
     }
 
     cudaError_t synchronize() const { return last_error_; }
-    cudaError_t lastError() const { return last_error_; }
+    cudaError_t takeLastError() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cudaError_t result = last_error_;
+        last_error_ = cudaSuccess;
+        last_message_.clear();
+        return result;
+    }
 
 private:
     cudaError_t fail(cudaError_t error, const std::string& message) {
@@ -121,8 +139,12 @@ cudaError_t cudaMemcpy(void* dst, const void* src, std::size_t count, cudaMemcpy
     @autoreleasepool { return runtimeFacade().copy(dst, src, count, kind); }
 }
 
+cudaError_t cudaMemset(void* dst, int value, std::size_t count) {
+    @autoreleasepool { return runtimeFacade().fill(dst, value, count); }
+}
+
 cudaError_t cudaDeviceSynchronize() { return runtimeFacade().synchronize(); }
-cudaError_t cudaGetLastError() { return runtimeFacade().lastError(); }
+cudaError_t cudaGetLastError() { return runtimeFacade().takeLastError(); }
 
 const char* cudaGetErrorString(cudaError_t error) {
     switch (error) {
@@ -144,9 +166,10 @@ cudaError_t mcu::dispatch(
     dim3 grid,
     dim3 block,
     const KernelArgument* arguments,
-    std::size_t argument_count
+    std::size_t argument_count,
+    std::size_t shared_bytes
 ) {
     @autoreleasepool {
-        return runtimeFacade().dispatchKernel(kernel_name, grid, block, arguments, argument_count);
+        return runtimeFacade().dispatchKernel(kernel_name, grid, block, arguments, argument_count, shared_bytes);
     }
 }

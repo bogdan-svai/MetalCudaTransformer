@@ -50,6 +50,8 @@ class CallEdgeIR:
     callee_id: str | None
     arguments: tuple[str, ...]
     source: SourceLocationIR
+    argument_types: tuple[TypeIR, ...] = tuple()
+    argument_symbols: tuple[str | None, ...] = tuple()
 
     def to_dict(self):
         return {
@@ -57,6 +59,30 @@ class CallEdgeIR:
             "callee_name": self.callee_name,
             "callee_id": self.callee_id,
             "arguments": list(self.arguments),
+            "argument_types": [item.to_dict() for item in self.argument_types],
+            "argument_symbols": list(self.argument_symbols),
+            "source": self.source.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class LocalObjectIR:
+    name: str
+    type: TypeIR
+    storage: str
+    array_extent: int | None
+    variable_length: bool
+    incomplete_array: bool
+    source: SourceLocationIR
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "type": self.type.to_dict(),
+            "storage": self.storage,
+            "array_extent": self.array_extent,
+            "variable_length": self.variable_length,
+            "incomplete_array": self.incomplete_array,
             "source": self.source.to_dict(),
         }
 
@@ -74,6 +100,7 @@ class FunctionSymbolIR:
     body: str
     translation_unit: str
     calls: list[CallEdgeIR] = field(default_factory=list)
+    local_objects: list[LocalObjectIR] = field(default_factory=list)
 
     @property
     def is_device_callable(self):
@@ -91,6 +118,7 @@ class FunctionSymbolIR:
             "body_line": self.body_line,
             "translation_unit": self.translation_unit,
             "calls": [call.to_dict() for call in self.calls],
+            "local_objects": [item.to_dict() for item in self.local_objects],
         }
 
 

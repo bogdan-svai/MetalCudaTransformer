@@ -81,7 +81,7 @@ def test_unsupported_cuda_library_fails(tmp_path):
     assert any(item["code"] == "UnsupportedExternalLibrary" for item in payload["diagnostics"])
 
 
-def test_divergent_barrier_is_warning_not_failure(tmp_path):
+def test_divergent_barrier_is_rejected(tmp_path):
     result, payload = run_mcu(
         tmp_path,
         """
@@ -96,8 +96,38 @@ def test_divergent_barrier_is_warning_not_failure(tmp_path):
         """,
     )
 
+    assert result.returncode == 1
+    assert any(item["code"] == "DivergentThreadgroupBarrier" for item in payload["diagnostics"])
+
+
+def test_data_dependent_and_early_exit_barriers_are_rejected(tmp_path):
+    for body in [
+        "if (values[0] != 0) { __syncthreads(); }",
+        "if (threadIdx.x == 0) return; __syncthreads();",
+        "if (threadIdx.x < 16) __syncthreads();",
+    ]:
+        result, payload = run_mcu(
+            tmp_path,
+            f"""__global__ void unsafe_barrier(int* values) {{ {body} }}
+void host() {{ cudaLaunch(unsafe_barrier, 1, 32, 0); }}
+""",
+        )
+        assert result.returncode == 1
+        assert any(item["code"] == "DivergentThreadgroupBarrier" for item in payload["diagnostics"])
+
+
+def test_uniform_scalar_condition_may_guard_barrier(tmp_path):
+    result, payload = run_mcu(
+        tmp_path,
+        """__global__ void uniform_barrier(int* values, int enabled) {
+    if (enabled) { __syncthreads(); }
+    values[threadIdx.x] = enabled;
+}
+void host() { cudaLaunch(uniform_barrier, 1, 32, 0, 1); }
+""",
+    )
     assert result.returncode == 0
-    assert any(item["code"] == "DivergentBarrierWarning" for item in payload["diagnostics"])
+    assert not any(item["code"] == "DivergentThreadgroupBarrier" for item in payload["diagnostics"])
 
 
 def test_invalid_path_returns_exit_code_2(tmp_path):

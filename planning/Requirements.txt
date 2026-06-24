@@ -179,6 +179,8 @@
   Compile and make commands must report named frontend, device-link, Metal compile, host compile, native link, cache lookup, and total phases. Cold, warm, no-op, and incremental measurements must be distinguishable.
 * REQ-7.2.9: Dependency-Compatible Make Integration
   The NVCC driver subset must support dependency-file options required for correct incremental Make builds and must preserve working-directory-relative paths and argument ordering.
+* REQ-7.2.10: Validated Native Link Flags
+  The NVCC-compatible link mode must accept and safely forward the documented `-l` and `-L` subset required by existing Makefiles. Link-only flags must not silently alter compile-only invocations.
 
 ## 7.3 Acceptance Requirements
 * An unchanged multi-file Makefile that invokes `nvcc -dc` must build through `mcu make`.
@@ -205,10 +207,25 @@
   Add validated cudaMemset behavior and the additional synchronous memory-copy forms required by supported projects.
 * REQ-8.2.5: Local Arrays and Pointer Operations
   Device code must support fixed local arrays, pointer offsets, supported casts, and byte-oriented operations required by hashing implementations.
+* REQ-8.2.6: CUDA Array Parameter Decay
+  CUDA/C array syntax in function parameters must canonicalize to pointer semantics while struct fields and local fixed arrays retain array semantics. Equivalent array/pointer declarations must resolve to one canonical device symbol.
+* REQ-8.2.7: Complete Device Call Graph
+  Every reachable device call must resolve to a user function, a typed translation rule, or a source-mapped unsupported diagnostic before MSL emission. Unsupported AST nodes must not cause valid neighboring calls to disappear silently.
+* REQ-8.2.8: Expression Address-Space Preservation
+  Pointer arithmetic, dereferences, C-style casts, supported reinterpret casts, local arrays, and struct fields must preserve or explicitly validate device, thread, threadgroup, and constant storage classes.
+* REQ-8.2.9: Atomic Access Model
+  Atomic lowering must mark atomic pointees and rewrite both atomic operations and non-atomic CUDA accesses to legal MSL atomic accesses with explicit memory ordering.
+* REQ-8.2.10: Coarsening and Synchronization Safety
+  Kernels using shared memory or threadgroup barriers must not be coarsened unless equivalence of logical CUDA participants and physical Metal synchronization participants is proven.
+* REQ-8.2.11: Diagnostic Severity Integrity
+  Semantic frontend errors must remain build-blocking errors in human and JSON output. Presentation must never relabel a compiler error as informational.
 
 ## 8.3 Acceptance Requirements
 * A shared-memory reduction must match a CPU reference.
 * A 20,000-thread atomic winner/counter test must complete without lost updates.
+* Original-style SHA helpers using array parameters, fixed local arrays, byte casts, and device memset must match standard vectors exactly.
+* A repository-owned Merkle/nonce fixture must match independent CPU roots and smallest-valid-nonce results.
+* The external assignment source set must reach a native build without Metal-specific source changes; full assignment input/output equivalence remains Stage 9.
 
 
 # -----------------------------------------------------------------------------
@@ -270,3 +287,33 @@
   Exit status 0 means success, 1 means source or semantic failure, and 2 means infrastructure or invocation failure.
 * REQ-12.1.4: IDE Backend
   Provide the stable backend contract required by a VS Code extension without coupling compiler components to editor-specific logic.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 13: Warp/SIMDGroup Semantics and CUDA Graphs
+# -----------------------------------------------------------------------------
+
+## 13.1 Functional Requirements
+* REQ-13.1.1: Logical CUDA Warp Model
+  Supported warp intrinsics must preserve CUDA's logical 32-lane masks, active-lane behavior, convergence, and return values. Direct Metal simdgroup mapping is allowed only for validated equivalent target widths.
+* REQ-13.1.2: Typed Warp Intrinsics
+  Shuffle, ballot, any/all, lane-mask, and sync operations must be selected by signature, mask semantics, and target capability. Unsupported divergent cases must fail explicitly.
+* REQ-13.1.3: CUDA Graph DAG
+  Supported kernel, copy, and memset graph nodes must preserve dependency ordering, parameter ownership, stream association, resource lifetime, and deterministic replay.
+* REQ-13.1.4: Graph Lifecycle
+  Graph creation/capture, instantiation, repeated launch, supported update, and destruction must expose CUDA-compatible status and failure behavior for the documented subset.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 14: Performance Engineering and Autotuning
+# -----------------------------------------------------------------------------
+
+## 14.1 Functional Requirements
+* REQ-14.1.1: Reproducible Performance Baselines
+  Every optimization must report target hardware, SDK, MCU revision, cold/warm state, median, p95, and correctness result against an unchanged reference workload.
+* REQ-14.1.2: Safe Autotuning
+  Geometry, coarsening, specialization, and scheduling candidates must be rejected on timeout, crash, output mismatch, or unstable measurements. Conservative deterministic defaults must remain available.
+* REQ-14.1.3: Compiler and Runtime Optimization
+  Optimize incremental compilation, Metal/pipeline archives, memory reuse, command batching, graph replay, and synchronization only after the corresponding semantics are covered by Stage 1-13 tests.
+* REQ-14.1.4: Explainable Decisions
+  MCU must expose selected tuning parameters, cache decisions, target assumptions, and fallback reasons in human and machine-readable metrics.

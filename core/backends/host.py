@@ -2,7 +2,7 @@ import re
 
 
 TRIPLE_CHEVRON = re.compile(
-    r"\b([A-Za-z_]\w*)\s*<<<\s*(.*?)\s*,\s*(.*?)\s*>>>\s*\((.*?)\)\s*;",
+    r"\b([A-Za-z_]\w*)\s*<<<\s*(.*?)\s*>>>\s*\((.*?)\)\s*;",
     re.DOTALL,
 )
 GLOBAL_SIGNATURE = re.compile(r"\b__global__\s+[^;{}]+(?P<end>[;{])", re.MULTILINE)
@@ -29,21 +29,33 @@ def transform_host_source(text):
         transformed,
         flags=re.MULTILINE,
     )
-    if "cudaLaunch(" in transformed or re.search(
-        r"\bcuda(?:Malloc|Free|Memcpy|DeviceSynchronize|GetLastError)\b", transformed
+    if "cudaLaunch(" in transformed or "cudaLaunchShared(" in transformed or re.search(
+        r"\bcuda(?:Malloc|Free|Memcpy|Memset|DeviceSynchronize|GetLastError)\b", transformed
     ):
         transformed = '#include "cuda_to_metal.h"\n' + transformed.lstrip()
     return transformed
 
 
 def rewrite_triple_chevrons(text):
-    return TRIPLE_CHEVRON.sub(
-        lambda match: (
-            f"cudaLaunch({match.group(1)}, {match.group(2)}, "
-            f"{match.group(3)}{', ' if match.group(4).strip() else ''}{match.group(4)});"
-        ),
-        text,
-    )
+    from core.frontend.regex_parser import split_top_level
+
+    def replace(match):
+        configuration = [item.strip() for item in split_top_level(match.group(2))]
+        if len(configuration) < 2:
+            return match.group(0)
+        arguments = match.group(3).strip()
+        separator = ", " if arguments else ""
+        if len(configuration) >= 3:
+            return (
+                f"cudaLaunchShared({match.group(1)}, {configuration[0]}, {configuration[1]}, "
+                f"{configuration[2]}{separator}{arguments});"
+            )
+        return (
+            f"cudaLaunch({match.group(1)}, {configuration[0]}, {configuration[1]}"
+            f"{separator}{arguments});"
+        )
+
+    return TRIPLE_CHEVRON.sub(replace, text)
 
 
 def has_host_code(text):

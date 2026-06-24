@@ -27,6 +27,7 @@ public:
     bool allocate(id<MTLDevice> device, void** output, std::size_t size, std::string& error);
     bool release(void* pointer, std::string& error);
     bool copy(void* dst, const void* src, std::size_t count, cudaMemcpyKind kind, std::string& error);
+    bool fill(void* dst, int value, std::size_t count, std::string& error);
     bool find(
         const void* pointer,
         std::size_t count,
@@ -47,6 +48,7 @@ private:
         bool destination,
         std::string& error
     ) const;
+    bool contains(const void* pointer, std::size_t count) const;
 
     std::unordered_map<void*, Allocation> allocations_;
 };
@@ -100,6 +102,7 @@ public:
         dim3 block,
         const KernelArgument* arguments,
         std::size_t argument_count,
+        std::size_t shared_bytes,
         std::string& error
     );
 };

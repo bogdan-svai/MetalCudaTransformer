@@ -109,4 +109,22 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo
   echo "== stage7 native runtime without MSL JIT =="
   /usr/bin/time -p "$STAGE7_DIR/numeric"
+
+  echo
+  echo "== stage8 atomics, memory, and threadgroup integration =="
+  /usr/bin/time -p python -m pytest -q tests/test_stage8_memory_atomics.py
+
+  echo
+  echo "== stage8 generic helper-to-shared atomic build =="
+  MCU_CACHE_DIR="$STAGE7_DIR/cache" /usr/bin/time -p ./mcu build \
+    examples/stage8_generic/main.cu --native --output /tmp/mcu_stage8_generic_verify
+
+  echo
+  echo "== stage8 signed/unsigned atomic metallib build =="
+  MCU_CACHE_DIR="$STAGE7_DIR/cache" /usr/bin/time -p ./mcu build \
+    examples/stage8_atomics/main.cu --native --output /tmp/mcu_stage8_atomics_verify
+
+  echo
+  echo "== stage8 generic helper-to-shared atomic runtime =="
+  /usr/bin/time -p /tmp/mcu_stage8_generic_verify/main
 fi

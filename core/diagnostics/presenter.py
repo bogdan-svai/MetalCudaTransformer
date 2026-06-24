@@ -19,7 +19,12 @@ def emit(payload, as_json):
     print(f"Launches: {len(metadata.get('launches', []))}")
 
     for item in metadata.get("parser_diagnostics", []):
-        label = WARNING if item.get("severity") == "warning" else "[INFO]"
+        if item.get("severity") == "error":
+            label = ERROR
+        elif item.get("severity") == "warning":
+            label = WARNING
+        else:
+            label = "[INFO]"
         print(f"{label} {format_location(item)}{item['message']}")
 
     diagnostics = payload.get("diagnostics", [])

@@ -7,10 +7,11 @@ import tempfile
 
 from core.backends.host import rewrite_triple_chevrons
 from core.frontend.clang_probe import CUDA_STUBS, _configure
-from core.frontend.regex_parser import read_text
+from core.frontend.regex_parser import iter_function_calls, read_text, split_top_level
 from core.ir.symbols import (
     CallEdgeIR,
     FunctionSymbolIR,
+    LocalObjectIR,
     MacroIR,
     ParameterIR,
     ProjectSymbolIR,
@@ -95,6 +96,11 @@ def _build_semantic_source(source_paths):
     preamble = [
         "#define __CUDACC__ 1",
         CUDA_STUBS,
+        "typedef unsigned char uint8_t;",
+        "typedef unsigned int uint32_t;",
+        "typedef unsigned long uint64_t;",
+        "typedef unsigned long size_t;",
+        'extern "C" void* memset(void*, int, unsigned long);',
         "",
     ]
     ordered = sorted(source_paths, key=lambda path: (path.suffix not in {".h", ".hpp"}, path.as_posix()))
@@ -134,7 +140,7 @@ def _clang_diagnostics(translation_unit):
             continue
         diagnostics.append({
             "code": "SemanticFrontendDiagnostic",
-            "severity": "warning",
+            "severity": "error" if item.severity >= item.Error else "warning",
             "message": str(item),
             "file": str(item.location.file) if item.location.file else None,
             "line": item.location.line or None,
@@ -162,7 +168,7 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
             if not text_function:
                 continue
             parameters = [
-                ParameterIR(argument.spelling or f"arg{index}", _type_ir(argument.type))
+                ParameterIR(argument.spelling or f"arg{index}", _parameter_type_ir(argument.type))
                 for index, argument in enumerate(cursor.get_arguments())
             ]
             symbol_id = canonical_symbol_id(
@@ -186,6 +192,7 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
                 body=text_function.get("body", ""),
                 translation_unit=text_function["file"],
             )
+            function.local_objects = _collect_local_objects(cursor, cursor_kind, function)
             previous = functions.get(symbol_id)
             if previous and previous.source != function.source:
                 diagnostics.append({
@@ -216,6 +223,7 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
                 types.setdefault(declaration.name, declaration)
 
     known_ids = set(functions)
+    macros = _collect_macros(source_paths)
     for cursor, function in function_cursors:
         calls = []
         call_ordinals = {}
@@ -234,7 +242,8 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
                 )
                 if callee_id not in known_ids:
                     callee_id = None
-            arguments = tuple(_tokens(argument) for argument in child.get_arguments())
+            argument_cursors = list(child.get_arguments())
+            arguments = tuple(_tokens(argument) for argument in argument_cursors)
             ordinal = call_ordinals.get(callee_name, 0)
             call_ordinals[callee_name] = ordinal + 1
             call_source = _original_call_location(function, callee_name, ordinal)
@@ -244,15 +253,26 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
                 callee_id=callee_id,
                 arguments=arguments,
                 source=call_source,
+                argument_types=tuple(_type_ir(argument.type) for argument in argument_cursors),
+                argument_symbols=tuple(
+                    _argument_symbol(argument, cursor_kind)
+                    for argument in argument_cursors
+                ),
             ))
-        function.calls = _deduplicate_calls(calls)
+        function.calls = _recover_body_calls(
+            function,
+            calls,
+            functions,
+            types,
+            macros,
+        )
 
     return ProjectSymbolIR(
         frontend="libclang_semantic",
         translation_units=[path.as_posix() for path in source_paths if path.suffix in {".cu", ".cpp", ".cc", ".cxx"}],
         functions=functions,
         types=types,
-        macros=_collect_macros(source_paths),
+        macros=macros,
         diagnostics=diagnostics,
     )
 
@@ -293,7 +313,8 @@ def _text_parameter_type(parameter):
 
 
 def _normalize_comparable_type(type_name):
-    return " ".join(str(type_name).replace(" *", "*").replace("* ", "*").split())
+    normalized = re.sub(r"\s*\[[^]]*\]\s*$", "*", str(type_name))
+    return " ".join(normalized.replace(" *", "*").replace("* ", "*").split())
 
 
 def _type_ir(clang_type):
@@ -307,6 +328,21 @@ def _type_ir(clang_type):
         kind=kind,
         is_const=canonical.strip().startswith("const "),
         pointer_depth=pointer_depth,
+    )
+
+
+def _parameter_type_ir(clang_type):
+    result = _type_ir(clang_type)
+    array = re.match(r"(?P<base>.+?)\s*\[[^]]*\]\s*$", result.canonical)
+    if not array:
+        return result
+    base = array.group("base").strip()
+    return TypeIR(
+        spelling=result.spelling,
+        canonical=f"{base}*",
+        kind="pointer",
+        is_const=base.startswith("const "),
+        pointer_depth=1,
     )
 
 
@@ -339,6 +375,48 @@ def _type_declaration(cursor, cursor_kind):
         )
         return TypeDeclarationIR(name, "struct", fields, None, location)
     return TypeDeclarationIR(name, "enum", tuple(), None, location)
+
+
+def _collect_local_objects(function_cursor, cursor_kind, function):
+    objects = []
+    for cursor in _walk(function_cursor):
+        if cursor.kind != cursor_kind.VAR_DECL:
+            continue
+        kind_name = getattr(cursor.type.kind, "name", str(cursor.type.kind))
+        extent = None
+        if kind_name == "CONSTANTARRAY":
+            try:
+                extent = cursor.type.get_array_size()
+            except Exception:
+                extent = None
+        storage = "threadgroup" if any(
+            child.kind == cursor_kind.ANNOTATE_ATTR and "mcu_shared" in (_tokens(child) or child.spelling)
+            for child in cursor.get_children()
+        ) else "thread"
+        objects.append(LocalObjectIR(
+            name=cursor.spelling,
+            type=_type_ir(cursor.type),
+            storage=storage,
+            array_extent=extent if extent is not None and extent >= 0 else None,
+            variable_length=kind_name == "VARIABLEARRAY",
+            incomplete_array=kind_name == "INCOMPLETEARRAY",
+            source=SourceLocationIR(
+                function.source.file,
+                cursor.location.line or function.source.line,
+                cursor.location.column or None,
+            ),
+        ))
+    return objects
+
+
+def _argument_symbol(cursor, cursor_kind):
+    references = []
+    for child in _walk(cursor):
+        if child.kind != cursor_kind.DECL_REF_EXPR or not child.referenced:
+            continue
+        if child.referenced.kind in {cursor_kind.PARM_DECL, cursor_kind.VAR_DECL}:
+            references.append(child.referenced.spelling)
+    return references[0] if references else None
 
 
 def _collect_macros(source_paths):
@@ -415,6 +493,52 @@ def _deduplicate_calls(calls):
         key = (call.callee_name, call.source.file, call.source.line, call.source.column)
         unique[key] = call
     return list(unique.values())
+
+
+def _recover_body_calls(function, ast_calls, functions, types, macros):
+    calls = list(ast_calls)
+    existing = {
+        (call.callee_name, call.source.line, call.source.column)
+        for call in calls
+    }
+    excluded = {
+        "if", "for", "while", "switch", "sizeof", "alignof", "decltype",
+        "static_cast", "reinterpret_cast", "const_cast", "dynamic_cast",
+        "return", "new", "delete", "throw",
+        *types.keys(),
+        *macros.keys(),
+    }
+    names = list(dict.fromkeys(
+        match.group(1)
+        for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", function.body)
+        if match.group(1) not in excluded
+    ))
+    functions_by_name = {}
+    for candidate in functions.values():
+        functions_by_name.setdefault(candidate.name, []).append(candidate)
+
+    for name in names:
+        for ordinal, (_offset, argument_text) in enumerate(iter_function_calls(function.body, name)):
+            arguments = tuple(
+                part for part in split_top_level(argument_text) if part.strip()
+            )
+            source = _original_call_location(function, name, ordinal)
+            if (name, source.line, source.column) in existing:
+                continue
+            candidates = [
+                candidate for candidate in functions_by_name.get(name, [])
+                if len(candidate.parameters) == len(arguments)
+            ]
+            callee_id = candidates[0].symbol_id if len(candidates) == 1 else None
+            calls.append(CallEdgeIR(
+                caller_id=function.symbol_id,
+                callee_name=name,
+                callee_id=callee_id,
+                arguments=arguments,
+                source=source,
+            ))
+            existing.add((name, source.line, source.column))
+    return _deduplicate_calls(calls)
 
 
 def _unavailable(message):

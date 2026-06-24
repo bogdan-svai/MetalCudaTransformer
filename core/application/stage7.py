@@ -51,10 +51,11 @@ def execute_invocation(project_root, invocation, command="compile", artifact_pat
                     if item.get("code") != "HardwareLimitExceeded"
                 ]
             semantic = parse_semantic_project(metadata)
-            diagnostics.extend(
-                item for item in semantic.diagnostics
-                if item.get("severity") == "error"
-            )
+            if not semantic.complete:
+                diagnostics.extend(
+                    item for item in semantic.diagnostics
+                    if item.get("severity") == "error"
+                )
         if any(item.get("severity") == "error" for item in diagnostics):
             return CommandResult(1, {
                 "ok": False,
@@ -154,6 +155,10 @@ def execute_invocation(project_root, invocation, command="compile", artifact_pat
         host_flags=_stable_unique([*invocation.host_flags, *contexts["host_flags"]]),
         command=command,
         native_objects=native_objects,
+        native_link_flags=[
+            *[f"-L{path}" for path in invocation.library_paths],
+            *[f"-l{name}" for name in invocation.libraries],
+        ],
     )
     if result.payload.get("build"):
         result.payload["build"]["objects"] = invocation.objects
@@ -284,6 +289,8 @@ def _fast_link_key(invocation, native_objects):
         "undefinitions": invocation.undefinitions,
         "optimization": invocation.optimization,
         "host_flags": invocation.host_flags,
+        "library_paths": invocation.library_paths,
+        "libraries": invocation.libraries,
         "mcu_version": MCU_VERSION,
     })
 

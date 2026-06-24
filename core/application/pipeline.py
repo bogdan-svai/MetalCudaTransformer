@@ -53,6 +53,7 @@ class CompilerPipeline:
         optimization="-O2",
         command="build",
         native_objects=None,
+        native_link_flags=None,
     ):
         inputs = list(path) if isinstance(path, (list, tuple)) else [path]
         missing = next((item for item in inputs if not Path(item).exists()), None)
@@ -80,7 +81,10 @@ class CompilerPipeline:
             for function in metadata.get("functions", [])
         )
         if requires_semantic and not semantic.complete:
-            diagnostics.extend(semantic_errors)
+            diagnostics.extend(
+                item for item in semantic_errors
+                if item not in diagnostics
+            )
 
         link_plan = None
         if semantic.project and semantic.complete:
@@ -142,6 +146,7 @@ class CompilerPipeline:
                     timings=timings,
                     native_objects=native_objects,
                     host_flags=host_flags,
+                    native_link_flags=native_link_flags,
                 )
             payload["build"]["native"] = native_result
             if not native_result["ok"]:

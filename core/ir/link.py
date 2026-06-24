@@ -11,6 +11,8 @@ class DeviceLinkPlan:
     call_targets: dict[tuple, str]
     intrinsics_used: dict[str, dict]
     diagnostics: list[dict] = field(default_factory=list)
+    atomic_parameters: dict[str, dict[str, dict]] = field(default_factory=dict)
+    atomic_locals: dict[str, dict[str, dict]] = field(default_factory=dict)
 
     @property
     def ok(self):
@@ -24,6 +26,8 @@ class DeviceLinkPlan:
         capabilities = {item["capability"] for item in self.intrinsics_used.values()}
         if self.ordered_variants:
             capabilities.add("device_functions")
+        if self.atomic_parameters or self.atomic_locals:
+            capabilities.add("typed_atomics")
         if project.types:
             capabilities.add("project_types")
         if project.macros:
@@ -50,6 +54,8 @@ class DeviceLinkPlan:
                 for symbol_id in sorted(reachable_ids)
             },
             "intrinsics_used": self.intrinsics_used,
+            "atomic_parameters": self.atomic_parameters,
+            "atomic_locals": self.atomic_locals,
             "capabilities": sorted(capabilities),
             "diagnostics": self.diagnostics,
         }

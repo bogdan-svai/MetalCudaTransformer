@@ -31,7 +31,16 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
     for kernel in kernels:
         optimization = coarsening_plans.get(kernel["name"], default_optimization())
         entry_point = f"{kernel['name']}_msl"
-        parameters, bindings = translate_parameters(kernel.get("parameters", []))
+        semantic_kernels = semantic_project.functions_named(kernel["name"]) if semantic_project else []
+        semantic_kernel = next((item for item in semantic_kernels if item.kind == "KERNEL"), None)
+        atomic_parameters = (
+            link_plan.atomic_parameters.get(semantic_kernel.symbol_id, {})
+            if semantic_kernel and link_plan else {}
+        )
+        parameters, bindings = translate_parameters(
+            kernel.get("parameters", []),
+            atomic_parameters=atomic_parameters,
+        )
         signature_parameters = parameters + GEOMETRY_ARGUMENTS
         source = {
             "file": kernel.get("file"),
@@ -39,10 +48,18 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
         }
         factor = optimization["coarsening_factor"]
         raw_body = kernel.get("body", "")
-        semantic_kernels = semantic_project.functions_named(kernel["name"]) if semantic_project else []
-        semantic_kernel = next((item for item in semantic_kernels if item.kind == "KERNEL"), None)
         if semantic_kernel and link_plan:
             raw_body = rewrite_kernel_calls(raw_body, semantic_kernel, link_plan)
+        atomic_locals = (
+            link_plan.atomic_locals.get(semantic_kernel.symbol_id, {})
+            if semantic_kernel and link_plan else {}
+        )
+        raw_body, shared_parameter, shared_descriptor = translate_shared_memory(
+            raw_body,
+            atomic_locals,
+        )
+        if shared_parameter:
+            signature_parameters.append(shared_parameter)
         body = mutate_body(
             raw_body,
             coarsening_factor=factor,
@@ -54,12 +71,15 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
             body,
             source if factor == 1 else None,
         ))
-        translated[kernel["name"]] = KernelRouteIR(
+        route = KernelRouteIR(
             msl_entry_point=entry_point,
             bindings=bindings,
             optimization_metrics=optimization,
             source=source,
         ).to_dict()
+        if shared_descriptor:
+            route["threadgroup_memory"] = shared_descriptor
+        translated[kernel["name"]] = route
 
     metal_source = render_metal_source(metal_functions, declarations=declarations, helpers=helpers)
     routing_table = {
@@ -78,7 +98,8 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
     return result
 
 
-def translate_parameters(parameters):
+def translate_parameters(parameters, atomic_parameters=None):
+    atomic_parameters = atomic_parameters or {}
     translated = []
     bindings = []
     for index, parameter in enumerate(parameters):
@@ -86,7 +107,9 @@ def translate_parameters(parameters):
         space = "device" if parsed["is_pointer"] else "constant"
         binding_target = f"buffer({index})"
         if parsed["is_pointer"]:
-            msl_param = f"device {parsed['type']} {parsed['identifier']} [[{binding_target}]]"
+            atomic_type = atomic_parameters.get(parsed["identifier"], {}).get("type")
+            parameter_type = f"{atomic_type}*" if atomic_type else parsed["type"]
+            msl_param = f"device {parameter_type} {parsed['identifier']} [[{binding_target}]]"
         else:
             msl_param = f"constant {parsed['type']}& {parsed['identifier']} [[{binding_target}]]"
         translated.append(msl_param)
@@ -121,6 +144,69 @@ def parse_parameter(parameter):
         "identifier": identifier,
         "is_pointer": "*" in type_name,
     }
+
+
+def translate_shared_memory(body, atomic_locals=None):
+    atomic_locals = atomic_locals or {}
+    dynamic = re.search(
+        r"\bextern\s+__shared__\s+(?P<type>(?:(?:unsigned|signed)\s+)?[A-Za-z_]\w*)\s+"
+        r"(?P<name>[A-Za-z_]\w*)\s*\[\s*\]\s*;",
+        body,
+    )
+    parameter = None
+    descriptor = None
+    if dynamic:
+        type_name = _map_kernel_type(dynamic.group("type"))
+        name = dynamic.group("name")
+        parameter_type = atomic_locals.get(name, {}).get("type", type_name)
+        parameter = f"threadgroup {parameter_type}* {name} [[threadgroup(0)]]"
+        descriptor = {
+            "schema_version": 1,
+            "slot": 0,
+            "element_type": type_name,
+            "alignment": _type_alignment(type_name),
+        }
+        body = body[:dynamic.start()] + body[dynamic.end():]
+    body = re.sub(r"\b__shared__\b", "threadgroup", body)
+    for name, use in atomic_locals.items():
+        atomic_type = use["type"]
+        body = re.sub(
+            rf"\bthreadgroup\s+(?:(?:unsigned|signed)\s+)?[A-Za-z_]\w*\s+"
+            rf"(?P<name>{re.escape(name)})\b",
+            rf"threadgroup {atomic_type} \g<name>",
+            body,
+        )
+        body = re.sub(
+            rf"(?<![=!<>])\b(?P<value>{re.escape(name)}(?:\s*\[[^]]+\])?)\s*=\s*(?P<rhs>[^;]+);",
+            rf"atomic_store_explicit(&\g<value>, \g<rhs>, memory_order_relaxed);",
+            body,
+        )
+        body = re.sub(
+            rf"(?P<prefix>=\s*|\breturn\s+)(?P<value>{re.escape(name)}(?:\s*\[[^]]+\])?)",
+            rf"\g<prefix>atomic_load_explicit(&\g<value>, memory_order_relaxed)",
+            body,
+        )
+    return body, parameter, descriptor
+
+
+def _map_kernel_type(type_name):
+    mapped = type_name
+    for pattern, replacement in [
+        (r"\bunsigned\s+char\b", "uchar"),
+        (r"\bunsigned\s+int\b", "uint"),
+    ]:
+        mapped = re.sub(pattern, replacement, mapped)
+    return mapped
+
+
+def _type_alignment(type_name):
+    if type_name in {"char", "uchar"}:
+        return 1
+    if type_name in {"short", "ushort"}:
+        return 2
+    if type_name in {"double", "long", "ulong", "int64_t", "uint64_t"}:
+        return 8
+    return 4
 
 
 def mutate_body(body, coarsening_factor=1, source=None):

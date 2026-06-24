@@ -2,6 +2,8 @@ import re
 
 from core.ir.link import DeviceLinkPlan
 from core.ir.symbols import FunctionVariantIR, generated_symbol_name
+from core.passes.atomics import analyze_atomic_parameters
+from core.passes.memory_model import validate_memory_model
 from core.registry.catalog import default_registry
 
 
@@ -20,6 +22,7 @@ def build_device_link_plan(project, registry=None):
         symbol_id for symbol_id, function in device_functions.items()
         if function.kind == "KERNEL"
     )
+    diagnostics.extend(validate_memory_model(project))
 
     for symbol_id, function in device_functions.items():
         if function.kind != "KERNEL" and re.search(
@@ -49,8 +52,10 @@ def build_device_link_plan(project, registry=None):
                 intrinsics[call.callee_name] = resolution.to_dict()
 
     _detect_cycles(kernels, device_functions, resolved_calls, diagnostics)
+    atomic_parameters, atomic_locals, atomic_diagnostics = analyze_atomic_parameters(project, resolved_calls)
+    diagnostics.extend(atomic_diagnostics)
     if _has_errors(diagnostics):
-        return DeviceLinkPlan(kernels, [], {}, intrinsics, diagnostics)
+        return DeviceLinkPlan(kernels, [], {}, intrinsics, diagnostics, atomic_parameters, atomic_locals)
 
     ordered = []
     seen_variants = set()
@@ -71,6 +76,24 @@ def build_device_link_plan(project, registry=None):
             callee = device_functions[callee_id]
             callee_spaces = _infer_callee_spaces(function, spaces, callee, call, diagnostics)
             if callee_spaces is None:
+                continue
+            atomic_callee_parameters = atomic_parameters.get(callee_id, {})
+            unsupported_atomic_space = next((
+                (callee.parameters[index].name, space)
+                for index, space in enumerate(callee_spaces)
+                if callee.parameters[index].name in atomic_callee_parameters
+                and space not in {"device", "threadgroup"}
+            ), None)
+            if unsupported_atomic_space:
+                name, space = unsupported_atomic_space
+                diagnostics.append({
+                    "code": "UnsupportedAtomicAddressSpace",
+                    "severity": "error",
+                    "message": f"Atomic parameter '{name}' resolves to unsupported '{space}' storage.",
+                    "file": call.source.file,
+                    "line": call.source.line,
+                    "column": call.source.column,
+                })
                 continue
             visit(callee_id, callee_spaces)
             target = generated_symbol_name(callee_id, callee_spaces)
@@ -98,7 +121,7 @@ def build_device_link_plan(project, registry=None):
         )
         visit(kernel_id, root_spaces)
 
-    return DeviceLinkPlan(kernels, ordered, call_targets, intrinsics, diagnostics)
+    return DeviceLinkPlan(kernels, ordered, call_targets, intrinsics, diagnostics, atomic_parameters, atomic_locals)
 
 
 def _resolve_call(call, project, registry, diagnostics):
@@ -185,23 +208,96 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
         parameter.name: caller_spaces[index]
         for index, parameter in enumerate(caller.parameters)
     }
-    local_names = _local_variables(caller.body)
+    local_objects = {item.name: item for item in caller.local_objects}
+    pointer_flow_sources = {
+        **caller_space_by_parameter,
+        **{
+            item.name: item.storage
+            for item in caller.local_objects
+            if item.type.kind == "array"
+        },
+    }
+    scalar_local_spaces = {
+        item.name: item.storage for item in caller.local_objects
+        if not item.type.pointer_depth and item.type.kind != "array"
+    }
+    inferred_local_spaces, conflicting_locals = _infer_local_pointer_spaces(
+        caller.body,
+        pointer_flow_sources,
+        scalar_local_spaces,
+    )
+    local_spaces = {
+        item.name: item.storage
+        for item in caller.local_objects
+        if item.type.kind == "array"
+    }
+    local_spaces.update(inferred_local_spaces)
     spaces = []
     for index, parameter in enumerate(callee.parameters):
         if not parameter.type.pointer_depth:
             spaces.append(None)
             continue
         expression = call.arguments[index] if index < len(call.arguments) else ""
-        matched = [
-            space for name, space in caller_space_by_parameter.items()
-            if space and re.search(rf"\b{re.escape(name)}\b", expression)
-        ]
-        if matched:
-            spaces.append(matched[0])
+        argument_symbol = (
+            call.argument_symbols[index]
+            if index < len(call.argument_symbols) else None
+        )
+        if argument_symbol in caller_space_by_parameter and caller_space_by_parameter[argument_symbol]:
+            matched = [caller_space_by_parameter[argument_symbol]]
+            local_matched = []
+        elif argument_symbol in local_spaces:
+            matched = []
+            local_matched = [local_spaces[argument_symbol]]
+        else:
+            matched = [
+                space for name, space in caller_space_by_parameter.items()
+                if space and re.search(rf"\b{re.escape(name)}\b", expression)
+            ]
+            local_matched = [
+                space for name, space in local_spaces.items()
+                if re.search(rf"\b{re.escape(name)}\b", expression)
+            ]
+        local_matched.extend(
+            space for name, space in scalar_local_spaces.items()
+            if re.search(rf"&\s*{re.escape(name)}\b", expression)
+        )
+        inferred_spaces = set(matched + local_matched)
+        if len(inferred_spaces) > 1:
+            diagnostics.append({
+                "code": "IllegalAddressSpaceCast",
+                "severity": "error",
+                "message": f"Argument '{expression}' combines incompatible pointer address spaces.",
+                "file": call.source.file,
+                "line": call.source.line,
+                "column": call.source.column,
+            })
+            return None
+        if inferred_spaces:
+            spaces.append(next(iter(inferred_spaces)))
             continue
-        if any(re.search(rf"\b{re.escape(name)}\b", expression) for name in local_names):
-            spaces.append("thread")
+        if argument_symbol in local_spaces:
+            spaces.append(local_spaces[argument_symbol])
             continue
+        if argument_symbol in conflicting_locals:
+            diagnostics.append({
+                "code": "IllegalAddressSpaceCast",
+                "severity": "error",
+                "message": f"Local pointer '{argument_symbol}' may refer to incompatible address spaces.",
+                "file": call.source.file,
+                "line": call.source.line,
+                "column": call.source.column,
+            })
+            return None
+        if argument_symbol in local_objects and local_objects[argument_symbol].type.pointer_depth:
+            diagnostics.append({
+                "code": "AmbiguousAddressSpace",
+                "severity": "error",
+                "message": f"Cannot prove pointee address space for local pointer '{argument_symbol}'.",
+                "file": call.source.file,
+                "line": call.source.line,
+                "column": call.source.column,
+            })
+            return None
         diagnostics.append({
             "code": "AmbiguousAddressSpace",
             "severity": "error",
@@ -217,13 +313,52 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
     return tuple(spaces)
 
 
-def _local_variables(body):
-    pattern = re.compile(
-        r"(?:^|[;{}])\s*(?:const\s+)?[A-Za-z_]\w*(?:\s*<[^;>]+>)?"
-        r"(?:\s+|\s*\*\s*)([A-Za-z_]\w*)\s*(?:\[[^]]+\])?\s*(?:[=;,{])",
-        re.MULTILINE,
-    )
-    return {match.group(1) for match in pattern.finditer(body)}
+def _infer_local_pointer_spaces(body, parameter_spaces, scalar_local_spaces=None):
+    spaces = dict(parameter_spaces)
+    scalar_local_spaces = scalar_local_spaces or {}
+    for match in re.finditer(
+        r"\b(?:extern\s+)?__shared__\s+[A-Za-z_]\w*\s+([A-Za-z_]\w*)",
+        body,
+    ):
+        spaces[match.group(1)] = "threadgroup"
+    declarations = list(re.finditer(
+        r"(?m)^\s*(?:const\s+)?[A-Za-z_]\w*\s*\*\s*"
+        r"(?P<name>[A-Za-z_]\w*)\s*(?:=\s*(?P<value>[^;]+))?;",
+        body,
+    ))
+    conflicts = set()
+    for _pass in range(len(declarations) + 1):
+        changed = False
+        for declaration in declarations:
+            name = declaration.group("name")
+            expressions = [declaration.group("value") or ""]
+            expressions.extend(
+                match.group(1)
+                for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
+            )
+            candidates = {
+                space
+                for expression in expressions
+                for source, space in spaces.items()
+                if expression and space and re.search(rf"\b{re.escape(source)}\b", expression)
+            }
+            candidates.update(
+                space for expression in expressions for local, space in scalar_local_spaces.items()
+                if expression and re.search(rf"&\s*{re.escape(local)}\b", expression)
+            )
+            if len(candidates) > 1:
+                conflicts.add(name)
+                continue
+            inferred = next(iter(candidates), None)
+            if inferred and spaces.get(name) != inferred:
+                spaces[name] = inferred
+                changed = True
+        if not changed:
+            break
+    return {
+        name: space for name, space in spaces.items()
+        if name not in parameter_spaces
+    }, conflicts
 
 
 def _call_key(call):

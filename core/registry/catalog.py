@@ -48,6 +48,24 @@ def default_registry():
             target_symbol="threadgroup_barrier(mem_flags::mem_threadgroup)",
         ),
     ]
+    atomic_targets = {
+        "atomicAdd": "atomic_fetch_add_explicit",
+        "atomicCAS": "atomic_compare_exchange_weak_explicit",
+        "atomicMin": "atomic_fetch_min_explicit",
+        "atomicMax": "atomic_fetch_max_explicit",
+        "atomicExch": "atomic_exchange_explicit",
+    }
+    rules.extend(
+        TranslationRule(
+            source_symbol=source,
+            category="device_atomic",
+            supported_arities=((3,) if source == "atomicCAS" else (2,)),
+            capability="typed_integer_atomics",
+            lowering_handler="lower_typed_atomic",
+            target_symbol=target,
+        )
+        for source, target in atomic_targets.items()
+    )
     geometry = {
         "threadIdx.x": "thread_position_in_threadgroup.x",
         "threadIdx.y": "thread_position_in_threadgroup.y",

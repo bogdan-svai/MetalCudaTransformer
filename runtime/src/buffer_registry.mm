@@ -42,11 +42,50 @@ bool BufferRegistry::copy(
     cudaMemcpyKind kind,
     std::string& error
 ) {
+    if (count == 0) {
+        return true;
+    }
+    if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault) {
+        error = "cudaMemcpy received an invalid copy kind";
+        return false;
+    }
+    if (kind == cudaMemcpyDefault) {
+        bool dstDevice = contains(dst, count);
+        bool srcDevice = contains(src, count);
+        kind = dstDevice
+            ? (srcDevice ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice)
+            : (srcDevice ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost);
+    }
     if (!validateCopyRange(dst, count, kind, true, error) ||
         !validateCopyRange(src, count, kind, false, error)) {
         return false;
     }
+    if (kind == cudaMemcpyDeviceToDevice && dst != src) {
+        auto destination = reinterpret_cast<std::uintptr_t>(dst);
+        auto source = reinterpret_cast<std::uintptr_t>(src);
+        if (destination < source + count && source < destination + count) {
+            error = "cudaMemcpy does not support overlapping device ranges";
+            return false;
+        }
+    }
     std::memmove(dst, src, count);
+    return true;
+}
+
+bool BufferRegistry::fill(
+    void* dst,
+    int value,
+    std::size_t count,
+    std::string& error
+) {
+    if (count == 0) {
+        return true;
+    }
+    if (!contains(dst, count)) {
+        error = "cudaMemset device range is outside registered allocation";
+        return false;
+    }
+    std::memset(dst, value, count);
     return true;
 }
 
@@ -57,6 +96,9 @@ bool BufferRegistry::find(
     NSUInteger& offset
 ) const {
     auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    if (count > UINTPTR_MAX - address) {
+        return false;
+    }
     for (const auto& item : allocations_) {
         auto base = reinterpret_cast<std::uintptr_t>(item.first);
         if (address >= base && address + count <= base + item.second.size) {
@@ -75,19 +117,23 @@ bool BufferRegistry::validateCopyRange(
     bool destination,
     std::string& error
 ) const {
-    bool requiresDevice = destination
+    bool expectedDevice = destination
         ? kind == cudaMemcpyHostToDevice || kind == cudaMemcpyDeviceToDevice
         : kind == cudaMemcpyDeviceToHost || kind == cudaMemcpyDeviceToDevice;
-    if (!requiresDevice || kind == cudaMemcpyDefault) {
-        return true;
-    }
-    id<MTLBuffer> buffer = nil;
-    NSUInteger offset = 0;
-    if (!find(pointer, count, buffer, offset)) {
-        error = "cudaMemcpy device range is outside registered allocation";
+    bool isDevice = contains(pointer, count);
+    if (isDevice != expectedDevice) {
+        error = expectedDevice
+            ? "cudaMemcpy device range is outside registered allocation"
+            : "cudaMemcpy host argument refers to a registered device allocation";
         return false;
     }
     return true;
+}
+
+bool BufferRegistry::contains(const void* pointer, std::size_t count) const {
+    id<MTLBuffer> buffer = nil;
+    NSUInteger offset = 0;
+    return find(pointer, count, buffer, offset);
 }
 
 }  // namespace mcu::runtime

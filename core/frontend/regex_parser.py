@@ -42,7 +42,7 @@ def strip_comments(text):
     return re.sub(r"//[^\n]*", "", without_blocks)
 
 
-def split_top_level(text):
+def split_top_level(text, delimiter=","):
     parts = []
     current = []
     depth = 0
@@ -51,7 +51,7 @@ def split_top_level(text):
             depth += 1
         elif char in ")]}>":
             depth = max(0, depth - 1)
-        if char == "," and depth == 0:
+        if char == delimiter and depth == 0:
             parts.append("".join(current).strip())
             current = []
         else:
@@ -150,12 +150,12 @@ def extract_functions(path, text):
     clean = strip_comments(text)
     clean = re.sub(r"^\s*#.*$", "", clean, flags=re.MULTILINE)
     pattern = re.compile(
-        r"(?P<prefix>(?:__global__\s+|__host__\s+|__device__\s+|static\s+|inline\s+|extern\s+)*)"
-        r"(?P<ret>[A-Za-z_][\w:<>,~*&\s]*?)\s+"
+        r"^[ \t]*(?P<prefix>(?:__global__[ \t]+|__host__[ \t]+|__device__[ \t]+|static[ \t]+|inline[ \t]+|extern[ \t]+)*)"
+        r"(?P<ret>[A-Za-z_][\w:<>,~*& \t]*?)[ \t]+"
         r"(?P<name>[A-Za-z_]\w*)\s*\((?P<params>[^;{}]*)\)\s*\{",
         re.MULTILINE,
     )
-    reserved = {"if", "for", "while", "switch", "catch"}
+    reserved = {"if", "for", "while", "switch", "catch", "sizeof"}
     for match in pattern.finditer(clean):
         name = match.group("name")
         if name in reserved:
@@ -209,18 +209,38 @@ def extract_launches(path, text):
             syntax="cudaLaunch",
         ))
 
+    for start, argument_text in iter_function_calls(clean, "cudaLaunchShared"):
+        args = split_top_level(argument_text)
+        if len(args) < 4:
+            continue
+        launches.append(LaunchInfo(
+            kernel=normalize_expr(args[0]),
+            file=path.as_posix(),
+            line=line_for_offset(clean, start),
+            grid_expr=resolve_expr(args[1], variables),
+            block_expr=resolve_expr(args[2], variables),
+            shared_expr=resolve_expr(args[3], variables),
+            args=[normalize_expr(arg) for arg in args[4:]],
+            syntax="cudaLaunchShared",
+        ))
+
     triple = re.compile(
-        r"\b([A-Za-z_]\w*)\s*<<<\s*(.*?)\s*,\s*(.*?)\s*>>>\s*\((.*?)\)\s*;",
+        r"\b([A-Za-z_]\w*)\s*<<<\s*(.*?)\s*>>>\s*\((.*?)\)\s*;",
         re.DOTALL,
     )
     for match in triple.finditer(clean):
+        configuration = [item.strip() for item in split_top_level(match.group(2))]
+        if len(configuration) < 2:
+            continue
         launches.append(LaunchInfo(
             kernel=match.group(1),
             file=path.as_posix(),
             line=line_for_offset(clean, match.start()),
-            grid_expr=resolve_expr(match.group(2), variables),
-            block_expr=resolve_expr(match.group(3), variables),
-            args=[normalize_expr(arg) for arg in split_top_level(match.group(4)) if arg.strip()],
+            grid_expr=resolve_expr(configuration[0], variables),
+            block_expr=resolve_expr(configuration[1], variables),
+            shared_expr=resolve_expr(configuration[2], variables) if len(configuration) >= 3 else "0",
+            stream_expr=resolve_expr(configuration[3], variables) if len(configuration) >= 4 else "0",
+            args=[normalize_expr(arg) for arg in split_top_level(match.group(3)) if arg.strip()],
             syntax="triple_chevron",
         ))
     return launches

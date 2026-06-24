@@ -1,0 +1,53 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 14 - PERFORMANCE ENGINEERING & AUTOTUNING
+# -----------------------------------------------------------------------------
+
+## 1. OBJECTIVE
+Stage 14 optimizes the complete, tested compiler/runtime without adding new CUDA
+semantics. Every optimization is guarded by correctness tests, reproducible
+benchmarks, hardware identity, and a reversible decision record.
+
+## 2. MEASUREMENT FIRST
+* Establish cold/warm compile, startup, CPU submission, GPU execution, transfer,
+  synchronization, memory, and throughput baselines for every reference workload.
+* Report median, p95, variance, thermal/warm-up policy, SDK, MCU revision, and
+  Apple GPU identity.
+* Use Metal counters/profiling where available; do not infer a bottleneck from
+  end-to-end wall time alone.
+* Preserve the 2026-06-23 external `test3` baseline: 11 blocks, five runs,
+  minimum total Merkle 0.04015 s, minimum total nonce 27.31680 s, and minimum
+  combined 27.35695 s. The nonce path is the first optimization target.
+
+## 3. COMPILER OPTIMIZATION
+* Autotune block geometry and safe coarsening from target limits and measured cost.
+* Specialize constants/address spaces only when code-size and cache impact remain
+  bounded.
+* Eliminate dead helpers, duplicate variants, redundant bounds work, and avoidable
+  host/device metadata processing.
+* Cache semantic IR, device-link plans, metallibs, pipeline archives, and final
+  links with measured hit/miss costs.
+* Benchmark SHA-specific constant placement, rotate lowering, loop unrolling,
+  register pressure, helper inlining, and nonce batch geometry independently.
+* Report candidates/s and time per mined block; do not hide poor kernel
+  throughput behind aggregate process startup measurements.
+
+## 4. RUNTIME OPTIMIZATION
+* Pool/reuse Metal buffers with bounded memory and deterministic release policy.
+* Batch command encoding and synchronization through Stage 10 semantics.
+* Use pipeline/binary archives and graph replay to reduce startup/submission cost.
+* Optimize copy/memset paths for unified memory without weakening CUDA validation.
+
+## 5. AUTOTUNING SAFETY
+* Tuning candidates run outside correctness baselines and are keyed by workload,
+  target, SDK, compiler version, and relevant dimensions.
+* A timeout, crash, numerical mismatch, or unstable result rejects the candidate.
+* Deterministic conservative defaults remain available through a CLI option.
+* Tuning databases are versioned, bounded, inspectable, and safely invalidated.
+
+## 6. EXIT CRITERIA
+* Reference workloads have before/after reports with statistically meaningful
+  improvements or a documented platform bottleneck.
+* No Stage 1-13 correctness or compatibility test regresses.
+* Build/no-op/startup/runtime budgets are enforced in CI where runner variance
+  permits and reported elsewhere.
+* MCU can explain selected geometry, cache decisions, and tuning choices.

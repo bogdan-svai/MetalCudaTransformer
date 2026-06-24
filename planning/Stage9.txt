@@ -10,11 +10,12 @@ The generated executable is native macOS code using Metal internally. It is not
 an NVIDIA CUDA binary and does not replace the official NVIDIA grading target.
 
 ## 1.1 INHERITED BASELINE AND OPEN GAP
-Stage 6 proves one-block SHA-256 correctness, with a 2.31 s clean native build and
-0.24 s process/JIT/small-workload runtime. It does not yet prove a full Merkle
-tree, parallel nonce search, original Makefile compatibility, file I/O contract,
-or assignment-scale throughput. Stage 7 must supply Make integration/caching and
-Stage 8 must supply shared memory, barriers, and atomics before this stage closes.
+Stage 7 provides Make/NVCC integration, MCU objects, offline metallib loading, and
+incremental caching. Its observed small clean build is 1.72-1.75 s, no-op build is
+0.05 s, and cold process plus small GPU workload is 0.22-0.25 s. Stage 8 must
+prove original-style SHA helpers, Merkle kernels, nonce atomics, shared memory,
+barriers, and runtime memory operations before this stage begins full application
+compatibility validation.
 
 ## 2. REFERENCE WORKLOAD
 The integration workload contains:
@@ -34,8 +35,8 @@ The integration workload contains:
 ## 4. USER WORKFLOW
 
 ```text
-mcu make -C gpu_miner
-./gpu_miner test4
+mcu make -C gpu_miner compile
+./gpu_miner/miner tests/test4.in
 ```
 
 No manual extraction of generated Metal, runtime environment variable, or Python
@@ -51,7 +52,8 @@ Required build budgets on the development machine:
 * cached MCU relink p95 <= 0.50 s when no translation unit changed;
 * one changed CUDA translation unit p95 <= 1.50 s for the reference project;
 * clean reference-project build p95 <= 10.00 s;
-* precompiled-library startup before workload p95 <= 0.05 s.
+* cold process/device/pipeline startup before workload p95 <= 0.25 s;
+* warmed in-process library/pipeline dispatch overhead p95 <= 0.05 s.
 
 Merkle and nonce-search performance is reported as hashes/s and effective input
 bytes/s, with warm-up, median, p95, GPU model, difficulty, and search range. A
