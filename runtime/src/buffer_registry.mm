@@ -45,22 +45,11 @@ bool BufferRegistry::copy(
     if (count == 0) {
         return true;
     }
-    if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault) {
-        error = "cudaMemcpy received an invalid copy kind";
+    cudaMemcpyKind resolved;
+    if (!resolveCopyKind(dst, src, count, kind, resolved, error)) {
         return false;
     }
-    if (kind == cudaMemcpyDefault) {
-        bool dstDevice = contains(dst, count);
-        bool srcDevice = contains(src, count);
-        kind = dstDevice
-            ? (srcDevice ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice)
-            : (srcDevice ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost);
-    }
-    if (!validateCopyRange(dst, count, kind, true, error) ||
-        !validateCopyRange(src, count, kind, false, error)) {
-        return false;
-    }
-    if (kind == cudaMemcpyDeviceToDevice && dst != src) {
+    if (resolved == cudaMemcpyDeviceToDevice && dst != src) {
         auto destination = reinterpret_cast<std::uintptr_t>(dst);
         auto source = reinterpret_cast<std::uintptr_t>(src);
         if (destination < source + count && source < destination + count) {
@@ -69,6 +58,41 @@ bool BufferRegistry::copy(
         }
     }
     std::memmove(dst, src, count);
+    return true;
+}
+
+bool BufferRegistry::resolveCopyKind(
+    const void* dst,
+    const void* src,
+    std::size_t count,
+    cudaMemcpyKind requested,
+    cudaMemcpyKind& resolved,
+    std::string& error
+) const {
+    if (requested < cudaMemcpyHostToHost || requested > cudaMemcpyDefault) {
+        error = "cudaMemcpy received an invalid copy kind";
+        return false;
+    }
+    resolved = requested;
+    if (resolved == cudaMemcpyDefault) {
+        bool dstDevice = contains(dst, count);
+        bool srcDevice = contains(src, count);
+        resolved = dstDevice
+            ? (srcDevice ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice)
+            : (srcDevice ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost);
+    }
+    if (!validateCopyRange(dst, count, resolved, true, error) ||
+        !validateCopyRange(src, count, resolved, false, error)) {
+        return false;
+    }
+    if (resolved == cudaMemcpyDeviceToDevice && dst != src) {
+        auto destination = reinterpret_cast<std::uintptr_t>(dst);
+        auto source = reinterpret_cast<std::uintptr_t>(src);
+        if (destination < source + count && source < destination + count) {
+            error = "cudaMemcpy does not support overlapping device ranges";
+            return false;
+        }
+    }
     return true;
 }
 

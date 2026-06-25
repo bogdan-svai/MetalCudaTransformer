@@ -30,7 +30,7 @@ def transform_host_source(text):
         flags=re.MULTILINE,
     )
     if "cudaLaunch(" in transformed or "cudaLaunchShared(" in transformed or re.search(
-        r"\bcuda(?:Malloc|Free|Memcpy|Memset|DeviceSynchronize|GetLastError)\b", transformed
+        r"\bcuda(?:Malloc|Free|Memcpy|MemcpyAsync|Memset|DeviceSynchronize|GetLastError|StreamCreate|StreamDestroy|StreamSynchronize)\b", transformed
     ):
         transformed = '#include "cuda_to_metal.h"\n' + transformed.lstrip()
     return transformed
@@ -45,6 +45,11 @@ def rewrite_triple_chevrons(text):
             return match.group(0)
         arguments = match.group(3).strip()
         separator = ", " if arguments else ""
+        if len(configuration) >= 4:
+            return (
+                f"cudaLaunchSharedOnStream({match.group(1)}, {configuration[0]}, {configuration[1]}, "
+                f"{configuration[2]}, {configuration[3]}{separator}{arguments});"
+            )
         if len(configuration) >= 3:
             return (
                 f"cudaLaunchShared({match.group(1)}, {configuration[0]}, {configuration[1]}, "

@@ -192,14 +192,6 @@ def validate(metadata):
                 file=launch["file"],
                 line=launch["line"],
             ))
-        if str(launch.get("stream_expr", "0")).strip() not in {"0", "NULL", "nullptr"}:
-            diagnostics.append(Diagnostic(
-                code="UnsupportedCudaStream",
-                severity="error",
-                message="Non-default CUDA streams are implemented in Stage 10.",
-                file=launch["file"],
-                line=launch["line"],
-            ))
         if total is not None and total > APPLE_THREADGROUP_LIMIT:
             diagnostics.append(Diagnostic(
                 code="HardwareLimitExceeded",

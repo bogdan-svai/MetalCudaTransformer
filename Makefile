@@ -1,4 +1,4 @@
-.PHONY: test check build verify install-hooks install uninstall
+.PHONY: test check build verify cuda-check install-hooks install uninstall
 
 test:
 	python -m pytest -q
@@ -11,6 +11,9 @@ build:
 
 verify:
 	./scripts/verify.sh
+
+cuda-check:
+	python scripts/cuda_checker.py --tier all
 
 install-hooks:
 	git config core.hooksPath .githooks

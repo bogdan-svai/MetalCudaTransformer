@@ -1,0 +1,1 @@
+{"id":"05","name":"single async stream","tier":"easy","program":"tests/cuda_suite/programs/stream_fanout.cu","args":["1","10","1024"]}

@@ -1,0 +1,1 @@
+{"id":"14","name":"dual stream fanout","tier":"hard","program":"tests/cuda_suite/programs/stream_fanout.cu","args":["2","25","4096"]}

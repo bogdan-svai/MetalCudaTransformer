@@ -14,8 +14,9 @@ bool resolveDispatchGeometry(
     NSUInteger factor = [metrics[@"coarsening_factor"] unsignedIntegerValue];
     factor = factor == 0 ? 1 : factor;
     if (factor > 1) {
-        NSArray* original = metrics[@"original_block"];
-        if ([original count] == 3 &&
+        id originalValue = metrics[@"original_block"];
+        NSArray* original = [originalValue isKindOfClass:[NSArray class]] ? originalValue : nil;
+        if (original && [original count] == 3 &&
             ([original[0] unsignedIntValue] != block.x ||
              [original[1] unsignedIntValue] != block.y ||
              [original[2] unsignedIntValue] != block.z)) {
@@ -28,8 +29,9 @@ bool resolveDispatchGeometry(
         }
         physical.width = block.x / factor;
     }
-    NSArray* recorded = metrics[@"physical_block"];
-    if ([recorded count] == 3 &&
+    id recordedValue = metrics[@"physical_block"];
+    NSArray* recorded = [recordedValue isKindOfClass:[NSArray class]] ? recordedValue : nil;
+    if (recorded && [recorded count] == 3 &&
         ([recorded[0] unsignedIntegerValue] != physical.width ||
          [recorded[1] unsignedIntegerValue] != physical.height ||
          [recorded[2] unsignedIntegerValue] != physical.depth)) {

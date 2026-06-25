@@ -132,4 +132,14 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   echo "== stage9 project compatibility and runtime metrics =="
   /usr/bin/time -p python scripts/verify_stage9.py --samples 5 \
     --output /tmp/mcu_stage9_report.json
+
+  echo
+  echo "== stage10 asynchronous scheduler tiers =="
+  /usr/bin/time -p python scripts/verify_stage10.py --samples 5 \
+    --output /tmp/mcu_stage10_report.json
+
+  echo
+  echo "== CUDA easy-to-stress checker (20 cases) =="
+  /usr/bin/time -p python scripts/cuda_checker.py --tier all \
+    --output /tmp/mcu_cuda_checker.json
 fi

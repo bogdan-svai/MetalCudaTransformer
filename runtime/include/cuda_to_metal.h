@@ -30,11 +30,24 @@ enum cudaMemcpyKind {
     cudaMemcpyDefault = 4,
 };
 
+struct mcuStream;
+using cudaStream_t = mcuStream*;
+
 cudaError_t cudaMalloc(void** device_ptr, std::size_t size);
 cudaError_t cudaFree(void* device_ptr);
 cudaError_t cudaMemcpy(void* dst, const void* src, std::size_t count, cudaMemcpyKind kind);
+cudaError_t cudaMemcpyAsync(
+    void* dst,
+    const void* src,
+    std::size_t count,
+    cudaMemcpyKind kind,
+    cudaStream_t stream = nullptr
+);
 cudaError_t cudaMemset(void* dst, int value, std::size_t count);
 cudaError_t cudaDeviceSynchronize();
+cudaError_t cudaStreamCreate(cudaStream_t* stream);
+cudaError_t cudaStreamDestroy(cudaStream_t stream);
+cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaGetLastError();
 const char* cudaGetErrorString(cudaError_t error);
 cudaError_t mcuSetArtifactDirectory(const char* path);
@@ -61,7 +74,8 @@ cudaError_t dispatch(
     dim3 block,
     const KernelArgument* arguments,
     std::size_t argument_count,
-    std::size_t shared_bytes = 0
+    std::size_t shared_bytes = 0,
+    cudaStream_t stream = nullptr
 );
 
 namespace detail {
@@ -100,9 +114,46 @@ cudaError_t launch_shared(
     return dispatch(kernel_name, grid, block, packed.data(), packed.size(), shared_bytes);
 }
 
+template <typename... Args>
+cudaError_t launch_on_stream(
+    const char* kernel_name,
+    dim3 grid,
+    dim3 block,
+    cudaStream_t stream,
+    Args&&... args
+) {
+    std::array<KernelArgument, sizeof...(Args)> packed = {
+        detail::pack_argument(std::forward<Args>(args))...
+    };
+    return dispatch(kernel_name, grid, block, packed.data(), packed.size(), 0, stream);
+}
+
+template <typename... Args>
+cudaError_t launch_shared_on_stream(
+    const char* kernel_name,
+    dim3 grid,
+    dim3 block,
+    std::size_t shared_bytes,
+    cudaStream_t stream,
+    Args&&... args
+) {
+    std::array<KernelArgument, sizeof...(Args)> packed = {
+        detail::pack_argument(std::forward<Args>(args))...
+    };
+    return dispatch(
+        kernel_name, grid, block, packed.data(), packed.size(), shared_bytes, stream
+    );
+}
+
 }  // namespace mcu
 
 #define cudaLaunch(kernel, grid, block, ...) \
     ::mcu::launch(#kernel, (grid), (block), ##__VA_ARGS__)
 #define cudaLaunchShared(kernel, grid, block, shared, ...) \
     ::mcu::launch_shared(#kernel, (grid), (block), (shared), ##__VA_ARGS__)
+#define cudaLaunchOnStream(kernel, grid, block, stream, ...) \
+    ::mcu::launch_on_stream(#kernel, (grid), (block), (stream), ##__VA_ARGS__)
+#define cudaLaunchSharedOnStream(kernel, grid, block, shared, stream, ...) \
+    ::mcu::launch_shared_on_stream( \
+        #kernel, (grid), (block), (shared), (stream), ##__VA_ARGS__ \
+    )

@@ -1,0 +1,1 @@
+{"id":"11","name":"large vector pipeline","tier":"hard","program":"tests/cuda_suite/programs/vector_pipeline.cu","args":["65536","20","1","1"]}

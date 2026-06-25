@@ -275,6 +275,20 @@
   Buffers and pipeline resources must remain valid until every referencing command completes. cudaFree must not invalidate in-flight work.
 * REQ-10.1.4: Concurrency Contract
   Independent streams may progress independently, but physical overlap is hardware-dependent and must be reported as a benchmark rather than guaranteed.
+* REQ-10.1.5: CUDA Launch Configuration
+  The fourth triple-chevron configuration value must lower to an opaque typed stream handle while preserving dynamic shared-memory bytes as the third value.
+* REQ-10.1.6: Async Copy Staging
+  Supported H2D, D2D, and D2H asynchronous copies must use ordered Metal commands and retain staging storage until synchronization. Unsupported pageable H2H async behavior must fail explicitly.
+* REQ-10.1.7: Deferred Error Attribution
+  Metal failures discovered after submission must retain the originating kernel or copy operation and surface through stream or device synchronization.
+* REQ-10.1.8: Performance Corpus
+  Repository-owned easy, medium, hard, and stress scheduler workloads must emit versioned metrics suitable as unchanged Stage 14 optimization baselines.
+
+## 10.2 Acceptance Requirements
+* One-stream producer/copy/consumer chains must be deterministic.
+* Explicit streams must preserve local order without accidental mutual waits.
+* `cudaFree`, stream destruction, and device synchronization must not release in-flight resources.
+* A 100-launch benchmark must compare per-launch synchronization with one batched wait and preserve exact output.
 
 
 # -----------------------------------------------------------------------------

@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
+
+struct mcuStream {
+    std::uint64_t identifier;
+};
 
 namespace mcu::runtime {
 
@@ -39,6 +44,14 @@ public:
         id<MTLBuffer> __strong& buffer,
         NSUInteger& offset
     ) const;
+    bool resolveCopyKind(
+        const void* dst,
+        const void* src,
+        std::size_t count,
+        cudaMemcpyKind requested,
+        cudaMemcpyKind& resolved,
+        std::string& error
+    ) const;
 
 private:
     struct Allocation {
@@ -56,6 +69,40 @@ private:
     bool contains(const void* pointer, std::size_t count) const;
 
     std::unordered_map<void*, Allocation> allocations_;
+};
+
+struct PendingCommand {
+    id<MTLCommandBuffer> command = nil;
+    id<MTLBuffer> staging = nil;
+    void* host_destination = nullptr;
+    std::size_t copy_size = 0;
+    std::string operation;
+};
+
+struct StreamState {
+    id<MTLCommandQueue> queue = nil;
+    std::vector<PendingCommand> pending;
+};
+
+class StreamRegistry {
+public:
+    ~StreamRegistry();
+    bool ensureDefault(id<MTLCommandQueue> queue, std::string& error);
+    bool create(id<MTLDevice> device, cudaStream_t* output, std::string& error);
+    bool destroy(cudaStream_t stream, std::string& error);
+    bool prepare(cudaStream_t stream, std::string& error);
+    bool enqueue(cudaStream_t stream, PendingCommand command, std::string& error);
+    bool synchronize(cudaStream_t stream, std::string& error);
+    bool synchronizeAll(std::string& error);
+    StreamState* get(cudaStream_t stream, std::string& error);
+
+private:
+    bool synchronizeState(StreamState& state, std::string& error);
+    bool synchronizeDefault(std::string& error);
+    bool synchronizeExplicit(std::string& error);
+
+    std::unordered_map<cudaStream_t, StreamState> streams_;
+    std::uint64_t next_identifier_ = 1;
 };
 
 class ArtifactCatalog {
@@ -98,7 +145,8 @@ bool resolveDispatchGeometry(
 class KernelDispatcher {
 public:
     static cudaError_t dispatch(
-        DeviceContext& context,
+        id<MTLDevice> device,
+        id<MTLCommandQueue> queue,
         BufferRegistry& buffers,
         ArtifactCatalog& artifacts,
         PipelineCache& pipelines,
@@ -108,6 +156,22 @@ public:
         const KernelArgument* arguments,
         std::size_t argument_count,
         std::size_t shared_bytes,
+        id<MTLCommandBuffer> __strong& submitted,
+        std::string& error
+    );
+};
+
+class AsyncCopyDispatcher {
+public:
+    static cudaError_t submit(
+        id<MTLDevice> device,
+        id<MTLCommandQueue> queue,
+        BufferRegistry& buffers,
+        void* dst,
+        const void* src,
+        std::size_t count,
+        cudaMemcpyKind kind,
+        PendingCommand& pending,
         std::string& error
     );
 };

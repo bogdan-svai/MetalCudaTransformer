@@ -5,7 +5,8 @@
 namespace mcu::runtime {
 
 cudaError_t KernelDispatcher::dispatch(
-    DeviceContext& context,
+    id<MTLDevice> device,
+    id<MTLCommandQueue> queue,
     BufferRegistry& buffers,
     ArtifactCatalog& artifacts,
     PipelineCache& pipelines,
@@ -15,6 +16,7 @@ cudaError_t KernelDispatcher::dispatch(
     const KernelArgument* arguments,
     std::size_t argument_count,
     std::size_t shared_bytes,
+    id<MTLCommandBuffer> __strong& submitted,
     std::string& error
 ) {
     NSDictionary* route = artifacts.route(kernel_name);
@@ -28,7 +30,7 @@ cudaError_t KernelDispatcher::dispatch(
         return cudaErrorInvalidValue;
     }
     id<MTLComputePipelineState> pipeline = pipelines.get(
-        context.device(), artifacts.library(), route[@"msl_entry_point"], error
+        device, artifacts.library(), route[@"msl_entry_point"], error
     );
     if (!pipeline) {
         return cudaErrorInitializationError;
@@ -67,7 +69,7 @@ cudaError_t KernelDispatcher::dispatch(
         }
         NSUInteger alignment = [threadgroup[@"alignment"] unsignedIntegerValue];
         if ((alignment && shared_bytes % alignment != 0) ||
-            shared_bytes > [context.device() maxThreadgroupMemoryLength]) {
+            shared_bytes > [device maxThreadgroupMemoryLength]) {
             error = "Dynamic threadgroup memory size is misaligned or exceeds the device limit";
             return cudaErrorInvalidValue;
         }
@@ -77,7 +79,7 @@ cudaError_t KernelDispatcher::dispatch(
     }
 
     auto submission_started = std::chrono::steady_clock::now();
-    id<MTLCommandBuffer> command = [context.queue() commandBuffer];
+    id<MTLCommandBuffer> command = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     [encoder setComputePipelineState:pipeline];
     for (NSUInteger index = 0; index < [bindings count]; ++index) {
@@ -105,23 +107,8 @@ cudaError_t KernelDispatcher::dispatch(
         "command_submission",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - submission_started).count()
     );
-    auto wait_started = std::chrono::steady_clock::now();
-    [command waitUntilCompleted];
-    recordRuntimeMetric(
-        "synchronization_wait",
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - wait_started).count()
-    );
-    CFTimeInterval gpu_start = [command GPUStartTime];
-    CFTimeInterval gpu_end = [command GPUEndTime];
-    if (gpu_end >= gpu_start && gpu_start > 0.0) {
-        recordRuntimeMetric("gpu_execution", gpu_end - gpu_start);
-    }
     incrementRuntimeCounter("kernel_dispatches");
-    if ([command status] == MTLCommandBufferStatusError) {
-        NSString* description = [[command error] localizedDescription];
-        error = description ? [description UTF8String] : "Metal command failed";
-        return cudaErrorLaunchFailure;
-    }
+    submitted = command;
     return cudaSuccess;
 }
 

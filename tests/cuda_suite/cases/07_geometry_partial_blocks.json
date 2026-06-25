@@ -1,0 +1,1 @@
+{"id":"07","name":"partial 2D edge blocks","tier":"medium","program":"tests/cuda_suite/programs/geometry_2d.cu","args":["100","73","16","8"]}
