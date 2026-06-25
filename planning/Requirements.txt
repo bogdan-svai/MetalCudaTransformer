@@ -297,53 +297,89 @@
 
 ## 11.1 Functional Requirements
 * REQ-11.1.1: Adapter Registry
-  Introduce routing schema version 2 and an extensible registry separating CUDA library symbols from native Apple adapter implementations.
-* REQ-11.1.2: First MPS Adapter
-  Map a validated cublasSgemm subset to MPSMatrixMultiplication while preserving transpose, leading-dimension, alpha, beta, and status semantics.
-* REQ-11.1.3: Library Diagnostics
+  Introduce routing schema version 2 and an extensible registry separating CUDA library symbols from native Apple adapter implementations. Existing kernel-only routes from schema version 1 must continue to load through an explicit compatibility path.
+* REQ-11.1.2: Library Call IR
+  Represent resolved CUDA library calls with typed symbols, argument roles, source locations, required runtime ABI, and adapter capability requirements.
+* REQ-11.1.3: First cuBLAS Adapter
+  Implement a validated cuBLAS subset: cublasCreate, cublasDestroy, cublasSetStream, cublasGetStream, and cublasSgemm. The SGEMM adapter must preserve transpose, dimensions, leading dimensions, alpha, beta, status values, pointer-mode validation, column-major indexing, and Stage 10 stream association.
+* REQ-11.1.4: Apple Acceleration Backend
+  Map the supported cublasSgemm subset to MPSMatrixMultiplication or a proven faster Metal implementation after the semantic adapter is stable, with adapter-owned caching for reusable descriptors, framework state, and temporary buffers where valid.
+* REQ-11.1.5: Library Diagnostics
   Unsupported library versions, symbols, data types, and modes must fail with source-mapped diagnostics.
+* REQ-11.1.6: Capability Staging
+  cuRAND, cuFFT, and Thrust-like primitives must be represented in the capability table as unsupported or planned entries until implemented. Adapter code remains in the main compiler/runtime repository; large private compatibility corpora and long-running benchmarks may live in separate private repositories.
+
+## 11.2 Acceptance Requirements
+* Non-library Stage 1-10 projects must build and run unchanged after routing schema version 2 is introduced.
+* A 128x128 cublasSgemm fixture must match an independent CPU reference within a documented epsilon.
+* A 2048x2048 cublasSgemm fixture must report adapter setup, temporary allocation, copy, queueing, GPU execution, and total timing metrics.
+* Stream-bound SGEMM calls must respect Stage 10 stream ordering.
+* Unsupported library calls must report the original CUDA source location.
 
 
 # -----------------------------------------------------------------------------
-# STAGE 12: Stable Tooling API and IDE Integration
+# STAGE 12: CUDA Runtime API Compatibility
 # -----------------------------------------------------------------------------
 
 ## 12.1 Functional Requirements
-* REQ-12.1.1: Stable JSON Contracts
+* REQ-12.1.1: Device Management Runtime APIs
+  Implement supported behavior for cudaGetDeviceCount, cudaGetDevice, cudaSetDevice, cudaGetDeviceProperties, and cudaDeviceReset on Apple Silicon's single logical Metal device model.
+* REQ-12.1.2: Event Runtime APIs
+  Implement cudaEventCreate, cudaEventCreateWithFlags, cudaEventRecord, cudaEventSynchronize, cudaEventElapsedTime, and cudaEventDestroy over the Stage 10 stream scheduler.
+* REQ-12.1.3: Runtime Error Contract
+  Implement cudaPeekAtLastError and refine cudaGetLastError behavior so repeated error reads match CUDA runtime expectations for the supported subset.
+* REQ-12.1.4: Occupancy Helper Subset
+  Implement a conservative cudaOccupancyMaxPotentialBlockSize subset that returns launch geometry compatible with MCU's Metal backend and documented limits.
+* REQ-12.1.5: Runtime API Diagnostics
+  Unsupported runtime APIs, flags, device IDs, and invalid handles must fail explicitly with CUDA-like error codes and diagnostics.
+
+## 12.2 Acceptance Requirements
+* CUDA files using supported cuda_runtime.h APIs and no auxiliary libraries must compile and run through mcu compile without source edits.
+* Device property reporting must be conservative and truthful for Apple Silicon.
+* Event timing must work across kernels and asynchronous memory operations.
+* Runtime API capability data must be ready for Stage 13 reporting.
+
+
+# -----------------------------------------------------------------------------
+# STAGE 13: Stable Tooling API and IDE Integration
+# -----------------------------------------------------------------------------
+
+## 13.1 Functional Requirements
+* REQ-13.1.1: Stable JSON Contracts
   Freeze versioned JSON output for check, compile, run, and make commands.
-* REQ-12.1.2: Capability Reporting
+* REQ-13.1.2: Capability Reporting
   Expose a machine-readable report of supported CUDA syntax, runtime APIs, intrinsics, compiler flags, and library adapters.
-* REQ-12.1.3: Exit Status Contract
+* REQ-13.1.3: Exit Status Contract
   Exit status 0 means success, 1 means source or semantic failure, and 2 means infrastructure or invocation failure.
-* REQ-12.1.4: IDE Backend
+* REQ-13.1.4: IDE Backend
   Provide the stable backend contract required by a VS Code extension without coupling compiler components to editor-specific logic.
 
 
 # -----------------------------------------------------------------------------
-# STAGE 13: Warp/SIMDGroup Semantics and CUDA Graphs
+# STAGE 14: Warp/SIMDGroup Semantics and CUDA Graphs
 # -----------------------------------------------------------------------------
 
-## 13.1 Functional Requirements
-* REQ-13.1.1: Logical CUDA Warp Model
+## 14.1 Functional Requirements
+* REQ-14.1.1: Logical CUDA Warp Model
   Supported warp intrinsics must preserve CUDA's logical 32-lane masks, active-lane behavior, convergence, and return values. Direct Metal simdgroup mapping is allowed only for validated equivalent target widths.
-* REQ-13.1.2: Typed Warp Intrinsics
+* REQ-14.1.2: Typed Warp Intrinsics
   Shuffle, ballot, any/all, lane-mask, and sync operations must be selected by signature, mask semantics, and target capability. Unsupported divergent cases must fail explicitly.
-* REQ-13.1.3: CUDA Graph DAG
+* REQ-14.1.3: CUDA Graph DAG
   Supported kernel, copy, and memset graph nodes must preserve dependency ordering, parameter ownership, stream association, resource lifetime, and deterministic replay.
-* REQ-13.1.4: Graph Lifecycle
+* REQ-14.1.4: Graph Lifecycle
   Graph creation/capture, instantiation, repeated launch, supported update, and destruction must expose CUDA-compatible status and failure behavior for the documented subset.
 
 
 # -----------------------------------------------------------------------------
-# STAGE 14: Performance Engineering and Autotuning
+# STAGE 15: Performance Engineering and Autotuning
 # -----------------------------------------------------------------------------
 
-## 14.1 Functional Requirements
-* REQ-14.1.1: Reproducible Performance Baselines
+## 15.1 Functional Requirements
+* REQ-15.1.1: Reproducible Performance Baselines
   Every optimization must report target hardware, SDK, MCU revision, cold/warm state, median, p95, and correctness result against an unchanged reference workload.
-* REQ-14.1.2: Safe Autotuning
+* REQ-15.1.2: Safe Autotuning
   Geometry, coarsening, specialization, and scheduling candidates must be rejected on timeout, crash, output mismatch, or unstable measurements. Conservative deterministic defaults must remain available.
-* REQ-14.1.3: Compiler and Runtime Optimization
-  Optimize incremental compilation, Metal/pipeline archives, memory reuse, command batching, graph replay, and synchronization only after the corresponding semantics are covered by Stage 1-13 tests.
-* REQ-14.1.4: Explainable Decisions
+* REQ-15.1.3: Compiler and Runtime Optimization
+  Optimize incremental compilation, Metal/pipeline archives, memory reuse, command batching, graph replay, and synchronization only after the corresponding semantics are covered by Stage 1-14 tests.
+* REQ-15.1.4: Explainable Decisions
   MCU must expose selected tuning parameters, cache decisions, target assumptions, and fallback reasons in human and machine-readable metrics.

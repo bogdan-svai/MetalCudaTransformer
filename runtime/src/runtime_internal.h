@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include "cublas_v2.h"
 #include "cuda_to_metal.h"
 
 #include <cstddef>
@@ -13,6 +14,12 @@
 
 struct mcuStream {
     std::uint64_t identifier;
+};
+
+struct mcuCublasContext {
+    cudaStream_t stream = nullptr;
+    cublasPointerMode_t pointer_mode = CUBLAS_POINTER_MODE_HOST;
+    bool alive = true;
 };
 
 namespace mcu::runtime {

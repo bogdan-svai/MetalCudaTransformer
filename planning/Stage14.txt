@@ -1,53 +1,43 @@
 # SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
-# SYSTEM LAYER: STAGE 14 - PERFORMANCE ENGINEERING & AUTOTUNING
+# SYSTEM LAYER: STAGE 14 - WARP/SIMDGROUP SEMANTICS & CUDA GRAPHS
 # -----------------------------------------------------------------------------
 
 ## 1. OBJECTIVE
-Stage 14 optimizes the complete, tested compiler/runtime without adding new CUDA
-semantics. Every optimization is guarded by correctness tests, reproducible
-benchmarks, hardware identity, and a reversible decision record.
+Stage 14 adds execution-model features that must exist before final optimization:
+CUDA warp collectives and reusable CUDA Graph scheduling. These are compatibility
+features, not benchmark-only rewrites.
 
-## 2. MEASUREMENT FIRST
-* Establish cold/warm compile, startup, CPU submission, GPU execution, transfer,
-  synchronization, memory, and throughput baselines for every reference workload.
-* Report median, p95, variance, thermal/warm-up policy, SDK, MCU revision, and
-  Apple GPU identity.
-* Use Metal counters/profiling where available; do not infer a bottleneck from
-  end-to-end wall time alone.
-* Preserve the 2026-06-23 external `test3` baseline: 11 blocks, five runs,
-  minimum total Merkle 0.04015 s, minimum total nonce 27.31680 s, and minimum
-  combined 27.35695 s. The nonce path is the first optimization target.
+## 2. WARP/SIMDGROUP MODEL
+* Represent active lanes, logical CUDA warp IDs, lane IDs, masks, and convergence
+  explicitly in IR.
+* Query and record Metal `threadExecutionWidth`; never assume Apple SIMD width is
+  CUDA-compatible without a validated target capability.
+* Support a typed initial subset of shuffle, ballot, any/all, lane-mask, and
+  `__syncwarp` behavior.
+* Preserve CUDA's 32-lane logical warp contract through direct simdgroup mapping
+  only on equivalent targets; otherwise reject or use a tested emulation.
+* Reject divergent/partial-mask cases whose CUDA semantics cannot be preserved.
 
-## 3. COMPILER OPTIMIZATION
-* Autotune block geometry and safe coarsening from target limits and measured cost.
-* Specialize constants/address spaces only when code-size and cache impact remain
-  bounded.
-* Eliminate dead helpers, duplicate variants, redundant bounds work, and avoidable
-  host/device metadata processing.
-* Cache semantic IR, device-link plans, metallibs, pipeline archives, and final
-  links with measured hit/miss costs.
-* Benchmark SHA-specific constant placement, rotate lowering, loop unrolling,
-  register pressure, helper inlining, and nonce batch geometry independently.
-* Report candidates/s and time per mined block; do not hide poor kernel
-  throughput behind aggregate process startup measurements.
+## 3. CUDA GRAPH MODEL
+* Build typed graph nodes for kernels, copies, memset, dependencies, and supported
+  host boundaries.
+* Implement graph creation, capture, instantiation, launch, update subset, and
+  destruction over the Stage 10 stream scheduler.
+* Validate DAG acyclicity, resource lifetime, parameter ownership, and replay
+  ordering before native command encoding.
+* Replays must avoid repeated translation and redundant scheduler construction.
 
-## 4. RUNTIME OPTIMIZATION
-* Pool/reuse Metal buffers with bounded memory and deterministic release policy.
-* Batch command encoding and synchronization through Stage 10 semantics.
-* Use pipeline/binary archives and graph replay to reduce startup/submission cost.
-* Optimize copy/memset paths for unified memory without weakening CUDA validation.
+## 4. TESTS
+* Warp collectives match CPU lane-level oracles for full and supported partial
+  masks, divergent branches, and boundary lanes.
+* Unsupported target widths and masks fail with source-mapped diagnostics.
+* Graph DAG ordering, fan-in/fan-out, repeated launch, update, and destruction are
+  deterministic and leak-free.
+* Graph and non-graph execution produce identical numerical/byte results.
+* Stage 1-13 behavior and metrics remain regression-gated.
 
-## 5. AUTOTUNING SAFETY
-* Tuning candidates run outside correctness baselines and are keyed by workload,
-  target, SDK, compiler version, and relevant dimensions.
-* A timeout, crash, numerical mismatch, or unstable result rejects the candidate.
-* Deterministic conservative defaults remain available through a CLI option.
-* Tuning databases are versioned, bounded, inspectable, and safely invalidated.
-
-## 6. EXIT CRITERIA
-* Reference workloads have before/after reports with statistically meaningful
-  improvements or a documented platform bottleneck.
-* No Stage 1-13 correctness or compatibility test regresses.
-* Build/no-op/startup/runtime budgets are enforced in CI where runner variance
-  permits and reported elsewhere.
-* MCU can explain selected geometry, cache decisions, and tuning choices.
+## 5. EXIT CRITERIA
+* Supported warp code has an explicit CUDA-to-Metal semantic proof and tests.
+* Supported CUDA Graphs replay through the scheduler without source changes.
+* Capability reporting distinguishes native, emulated, and unsupported behavior.
+* Performance is measured but not yet used to weaken correctness contracts.

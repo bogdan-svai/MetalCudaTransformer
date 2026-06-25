@@ -3,17 +3,12 @@ import re
 
 from core.frontend.regex_parser import split_top_level, normalize_expr
 from core.ir.models import Diagnostic
+from core.registry.library_adapters import default_library_registry
 
 
 APPLE_THREADGROUP_LIMIT = 1024
-UNSUPPORTED_CUDA_LIBRARIES = {
-    "cublas.h",
-    "cublas_v2.h",
-    "cufft.h",
-    "curand.h",
-    "cusolverDn.h",
-    "cusparse.h",
-}
+LIBRARY_REGISTRY = default_library_registry()
+UNSUPPORTED_CUDA_LIBRARIES = {"cublas.h", *LIBRARY_REGISTRY.unsupported_libraries()}
 
 
 def parse_dimension(expr):
@@ -161,7 +156,7 @@ def validate(metadata):
             diagnostics.append(Diagnostic(
                 code="UnsupportedExternalLibrary",
                 severity="error",
-                message=f"CUDA library '{include['name']}' has no Stage 4 runtime shim mapping.",
+                message=f"CUDA library '{include['name']}' has no supported Stage 11 adapter.",
                 file=include["file"],
                 line=include["line"],
             ))

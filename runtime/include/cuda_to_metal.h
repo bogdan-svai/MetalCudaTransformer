@@ -20,6 +20,7 @@ enum cudaError_t {
     cudaErrorMemoryAllocation = 2,
     cudaErrorInitializationError = 3,
     cudaErrorLaunchFailure = 4,
+    cudaErrorNotSupported = 5,
 };
 
 enum cudaMemcpyKind {

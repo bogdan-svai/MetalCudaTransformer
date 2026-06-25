@@ -75,7 +75,8 @@ def test_build_generates_msl_signature_body_and_routing_table(tmp_path):
     assert "blockDim" not in metal
 
     table = routing["translated_kernels"]["scale"]
-    assert routing["schema_version"] == 1
+    assert routing["schema_version"] == 2
+    assert routing["library_adapters"] == []
     assert table["msl_entry_point"] == "scale_msl"
     assert table["argument_count"] == 3
     assert table["bindings"] == [

@@ -67,11 +67,25 @@ def test_hardware_limit_exceeded_returns_exit_code_1(tmp_path):
     assert payload["diagnostics"][0]["code"] == "HardwareLimitExceeded"
 
 
-def test_unsupported_cuda_library_fails(tmp_path):
+def test_supported_cublas_header_is_accepted(tmp_path):
     result, payload = run_mcu(
         tmp_path,
         """
         #include <cublas_v2.h>
+        __global__ void k(float* a) { a[threadIdx.x] = 0; }
+        void host() { cudaLaunch(k, 1, 32, 0); }
+        """,
+    )
+
+    assert result.returncode == 0
+    assert payload["ok"] is True
+
+
+def test_unsupported_cuda_library_fails(tmp_path):
+    result, payload = run_mcu(
+        tmp_path,
+        """
+        #include <curand.h>
         __global__ void k(float* a) { a[threadIdx.x] = 0; }
         void host() { cudaLaunch(k, 1, 32, 0); }
         """,

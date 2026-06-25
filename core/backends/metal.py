@@ -83,7 +83,8 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
 
     metal_source = render_metal_source(metal_functions, declarations=declarations, helpers=helpers)
     routing_table = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "library_adapters": [],
         "translated_kernels": translated,
     }
     result = {

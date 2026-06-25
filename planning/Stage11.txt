@@ -3,50 +3,164 @@
 # -----------------------------------------------------------------------------
 
 ## 1. OBJECTIVE
-Stage 11 adds explicit adapters for supported CUDA libraries after standalone
-CUDA projects already compile and run through MCU.
+Stage 11 adds a typed adapter layer for CUDA auxiliary libraries. MCU must stop
+treating library calls as opaque unsupported source and must translate a first
+high-value library path end to end.
 
-## 1.1 KNOWN PROBLEMS TO CLOSE
-* CUDA library calls currently fail validation and have no typed adapter IR.
-* CUDA and Accelerate/MPS may differ in layout, transpose, scalar, status, and
-  stream semantics; a name-to-name replacement is insufficient.
-* Creating MPS objects or temporary buffers per call can dominate small matrices.
-* Hidden host copies would preserve output while destroying expected GPU behavior,
-  so every adapter must report copies and temporary allocations.
+The first implemented vertical is cuBLAS SGEMM because it unlocks a common CUDA
+pattern and has a credible Apple GPU target through Metal Performance Shaders.
+The stage also establishes the registry and diagnostics needed to add cuRAND,
+cuFFT, and selected Thrust-style primitives later without rewriting the runtime.
 
-## 2. ADAPTER ARCHITECTURE
-* LibraryCallIR represents resolved external calls and argument roles.
-* LibraryAdapterRegistry selects adapters by library, symbol, signature, and mode.
-* Runtime adapter implementations own Apple framework objects and dispatch.
-* Routing schema version 2 stores only runtime-required library call descriptors.
+## 1.1 CURRENT PROBLEMS TO CLOSE
+* CUDA library includes currently fail validation or disappear into normal host
+  compilation without a compiler-owned adapter model.
+* CUDA library functions have handle, status, stream, pointer-mode, layout, and
+  lifetime semantics that cannot be translated by simple name replacement.
+* Apple targets differ by operation: MPS is appropriate for some matrix and
+  neural workloads, Accelerate/vDSP may fit CPU-side fallbacks, and custom Metal
+  kernels may be required for unsupported primitives.
+* Hidden CPU copies can make a result correct but destroy the expected GPU
+  execution model. Every adapter must report temporary allocations and copies.
+* Routing schema changes must not break existing non-library kernels.
 
-Compiler translation rules and runtime routing remain separate registries.
+## 2. LIBRARY PRIORITY
+Implement one complete vertical first, then expand from the same infrastructure.
 
-## 3. FIRST ADAPTER: CUBLAS SGEMM
-Support a validated cublasSgemm subset through MPSMatrixMultiplication, including
-transpose modes, M/N/K dimensions, leading dimensions, alpha, beta, buffer
-offsets, handle lifecycle, status values, and Stage 10 stream association.
+### 2.1 Stage 11 target
+* cuBLAS:
+  * `cublasCreate`
+  * `cublasDestroy`
+  * `cublasSetStream`
+  * `cublasGetStream`
+  * `cublasSgemm`
 
-MPSMatrixMultiplication targets Apple GPU acceleration. Neural Engine execution
-is not claimed.
+Optional small cuBLAS functions may be added only after SGEMM is stable:
+`cublasSaxpy`, `cublasSdot`, and `cublasSgemv`.
 
-## 4. SCHEMA MIGRATION
-Schema version 2 must reject incompatible artifacts clearly and provide an
-explicit migration path for version 1 kernel routes. Unknown adapter kinds fail
-before dispatch.
+### 2.2 Later library candidates
+* cuRAND subset: generator lifecycle and deterministic uniform generation. This
+  requires explicit seed/sequence compatibility decisions and is not part of the
+  first Stage 11 implementation.
+* cuFFT subset: plan lifecycle and common 1D/2D complex transforms. This should
+  be designed after the adapter registry proves stable.
+* Thrust-like primitives: reduce, transform, scan, and sort. These are useful
+  but too broad for the first adapter stage because they may require compiler
+  lowering, template handling, and multiple custom kernels.
+* Runtime compatibility APIs such as cudaEvent should remain in the CUDA runtime
+  track, not in the library-adapter track.
 
-## 5. ACCEPTANCE
-* A 128x128 SGEMM matches an independent CPU reference within documented epsilon.
-* A 2048x2048 case is a GPU smoke/performance benchmark, not a serial CPU test.
-* Unsupported data types, transpose modes, or library symbols are source-mapped.
-* Existing non-library kernels remain compatible after schema migration.
+## 3. STAGE 11 SPLIT
+Stage 11 is split into implementation checkpoints so schema work, runtime work,
+and performance work can be tested independently.
 
-## 6. PERFORMANCE BUDGET AND MEASUREMENT
-* Cache reusable MPS objects and temporary allocations where dimensions and stream
-  semantics permit; warmed calls must not recreate framework state unnecessarily.
-* Report adapter setup, host/device copies, queueing, GPU execution, and total time.
-* The 2048x2048 SGEMM benchmark must compare against a direct MPS baseline on the
-  same machine. MCU median GPU-plus-adapter time should be within 15% after warm-up.
-* The 128x128 fixture is a correctness and overhead test, not a peak-FLOPS claim.
-* Existing non-library kernel startup/build benchmarks may regress by at most 10%
-  after routing schema version 2 is introduced.
+### 3.1 Stage 11A - Adapter infrastructure
+* Add `LibraryCallIR` for resolved external library calls.
+* Add `LibraryAdapterRegistry` keyed by library, symbol, signature, and mode.
+* Add a compiler capability table for supported and unsupported library entries.
+* Introduce routing schema version 2 while preserving version 1 kernel routes.
+* Produce source-mapped diagnostics for unsupported library includes, versions,
+  symbols, signatures, pointer modes, and data types.
+* Verify every Stage 1-10 non-library fixture still builds and runs unchanged.
+
+### 3.2 Stage 11B - cuBLAS handle and SGEMM semantics
+* Provide a minimal `cublas_v2.h` shim for the supported subset.
+* Implement `cublasHandle_t`, status codes, create/destroy, stream binding, and
+  pointer-mode validation.
+* Implement the supported `cublasSgemm` subset against MCU device allocations
+  with CUDA-compatible column-major indexing and validation.
+* Preserve transpose modes, dimensions, leading dimensions, alpha, beta, input
+  and output buffers, and Stage 10 stream association.
+* Match an independent CPU reference for small matrices within a documented
+  floating-point epsilon.
+
+### 3.3 Stage 11C - MPS acceleration, performance, and reporting
+* Map the supported `cublasSgemm` subset to MPSMatrixMultiplication or a proven
+  faster Metal implementation behind the same public adapter API.
+* Cache reusable MPS descriptors, framework objects, and temporary allocations
+  where dimensions and stream semantics permit.
+* Report adapter setup time, temporary allocation bytes, copy bytes, queueing
+  time, GPU execution time, and total call time.
+* Compare a large SGEMM fixture against a direct MPS baseline on the same machine.
+* Enforce that existing non-library startup/build/runtime benchmarks do not
+  regress by more than 10 percent from Stage 10.
+
+## 4. ADAPTER ARCHITECTURE
+Compiler and runtime concerns remain separate:
+
+* The compiler detects library includes and calls, resolves signatures, validates
+  capabilities, and emits adapter descriptors.
+* The runtime owns Apple framework objects, stream scheduling, Metal resources,
+  and adapter metrics.
+* The routing table contains only runtime-required descriptors. It must not embed
+  source-only compiler metadata.
+* Unsupported adapter descriptors fail before dispatch with a clear artifact
+  version or capability diagnostic.
+
+Routing schema version 2 must support both:
+
+* normal kernel routes from Stage 1-10;
+* library adapter routes with adapter kind, symbol, signature, stream behavior,
+  and required runtime ABI.
+
+## 5. REPOSITORY POLICY
+The main compiler/runtime repository should be private while library behavior is
+being developed against third-party and coursework-derived workloads.
+
+Recommended repository split:
+
+* `MetalCudaTransformer` private main repository:
+  compiler, runtime, adapters, short fixtures, CI gates, stage documentation.
+* `mcu-cuda-corpus` private repository:
+  large real CUDA projects, coursework-style applications, compatibility cases,
+  source sets that should not be public.
+* `mcu-benchmarks` private repository:
+  long-running benchmark data, hardware comparison history, Stage 14 tuning
+  reports, and private performance workloads.
+
+Library adapter code should stay in the main repository for now because it is a
+core compiler/runtime feature. Only large/private tests and benchmark histories
+should move out.
+
+## 6. ACCEPTANCE
+* A non-library Stage 10 fixture builds against routing schema version 2 without
+  source or command changes.
+* An unsupported library call reports a source-mapped diagnostic and exits with a
+  source/semantic failure status.
+* A 128x128 `cublasSgemm` fixture matches an independent CPU reference.
+* A 2048x2048 SGEMM fixture runs as a GPU smoke/performance benchmark after the
+  Stage 11C acceleration backend is enabled and reports adapter metrics.
+* Stream-bound SGEMM calls respect Stage 10 stream ordering.
+* Existing Stage 1-10 verification and the 20-case CUDA checker remain green.
+
+## 8. IMPLEMENTATION REPORT - 2026-06-25
+Implemented Stage 11 adapter path:
+
+* `runtime/include/cublas_v2.h` for the supported cuBLAS subset;
+* `cublasHandle_t` lifecycle, stream binding, and host pointer-mode validation;
+* `LibraryAdapterRegistry` capability entries for supported cuBLAS symbols and
+  planned/unsupported cuRAND, cuFFT, cuSolver, and cuSparse libraries;
+* routing schema version 2 generation with runtime compatibility for schema
+  versions 1 and 2;
+* `cublasSgemm` column-major execution over MCU device allocations;
+* MPSMatrixMultiplication backend using the identity `C^T = op(B)^T * op(A)^T`
+  so cuBLAS column-major buffers are consumed without host layout copies;
+* validation for nulls, unsupported conjugate transpose, leading dimensions, and
+  out-of-allocation device pointer ranges;
+* runtime metrics for `cublas_calls`, `cublas_sgemm_elements`, and
+  `cublas_sgemm`, `cublas_adapter_setup`, and `cublas_queueing` phase time;
+* parser validation now allows `cublas_v2.h` while keeping other CUDA auxiliary
+  libraries unsupported with source-mapped diagnostics;
+* `examples/stage11_cublas/main.cu` plus `scripts/verify_stage11.py` cover
+  128x128 correctness and 2048x2048 MPS smoke/performance when a Metal device is
+  available.
+
+The implementation remains generic for supported cuBLAS SGEMM calls. It is not
+special-cased for coursework inputs or any repository-owned fixture.
+
+## 7. NON-GOALS
+* Full cuBLAS coverage.
+* cuRAND, cuFFT, or Thrust implementation in the first adapter vertical.
+* Warp intrinsics or CUDA Graphs; these remain Stage 13.
+* Broad performance tuning beyond adapter-local caching and measurement; global
+  optimization remains Stage 14.

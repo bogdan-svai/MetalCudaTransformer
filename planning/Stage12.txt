@@ -1,52 +1,99 @@
 # SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
-# SYSTEM LAYER: STAGE 12 - STABLE TOOLING API & IDE INTEGRATION
+# SYSTEM LAYER: STAGE 12 - CUDA RUNTIME API COMPATIBILITY
 # -----------------------------------------------------------------------------
 
 ## 1. OBJECTIVE
-Stage 12 freezes the machine-facing MCU contract and exposes compiler services to
-editor tooling without coupling compiler internals to a specific IDE.
+Stage 12 expands MCU's support for the main CUDA Runtime API. The goal is to run
+more ordinary CUDA programs that include `cuda_runtime.h` without requiring
+auxiliary CUDA libraries such as cuBLAS, cuRAND, or cuFFT.
 
-## 1.1 KNOWN PROBLEMS TO CLOSE
-* Current human output is useful interactively but phase timings, cache events,
-  capabilities, and diagnostics are not a frozen machine-readable contract.
-* Repeated IDE checks would pay process and frontend startup unless a service or
-  reusable project state is introduced.
-* Schema stability can slow internal refactoring unless versioning and adapters
-  are owned at serialization boundaries.
+This stage is about CUDA's primary runtime contract: device selection, device
+properties, events, error behavior, occupancy helpers, memory edge cases, and
+runtime state. It should not add warp intrinsics, CUDA Graphs, or new external
+library adapters.
 
-## 2. JSON CONTRACTS
-Versioned schemas are required for check, build, compile, run, make, diagnostics,
-capabilities, artifacts, cache events, and timing metrics. With `--json`, stdout
-contains exactly one JSON document and human logs use stderr when needed.
+## 2. WHY THIS STAGE MOVES BEFORE TOOLING
+Stable JSON/tooling contracts are useful only after the runtime surface is less
+volatile. CUDA programs commonly use `cudaEvent*`, `cudaGetDeviceProperties`,
+`cudaGetDeviceCount`, and `cudaPeekAtLastError` even when they do not use any
+external library. These APIs should exist before freezing capability reporting.
 
-## 3. CAPABILITY REPORT
-Expose supported CUDA syntax, types, qualifiers, intrinsics, runtime APIs, NVCC
-flags, architecture constraints, and library adapters. Each entry includes status,
-supported signatures, target requirements, and the stage that introduced it.
+## 3. FUNCTIONAL SCOPE
+Implement and test a validated subset of:
 
-## 4. PROCESS CONTRACT
-* Exit 0: successful operation.
-* Exit 1: source, semantic, translation, or native compilation failure.
-* Exit 2: invalid invocation, missing toolchain, filesystem, or infrastructure error.
-* Cancellation and timeout behavior must be explicit and machine-readable.
+* `cudaGetDeviceCount`
+* `cudaGetDevice`
+* `cudaSetDevice`
+* `cudaGetDeviceProperties`
+* `cudaDeviceReset`
+* `cudaPeekAtLastError`
+* `cudaEventCreate`
+* `cudaEventCreateWithFlags`
+* `cudaEventRecord`
+* `cudaEventSynchronize`
+* `cudaEventElapsedTime`
+* `cudaEventDestroy`
+* `cudaOccupancyMaxPotentialBlockSize` conservative subset
 
-## 5. IDE BACKEND
-Provide stable requests for project analysis, diagnostics, capability lookup,
-build progress, and source-map navigation. Transport may be subprocess JSON or a
-long-running service, but compiler packages must not import editor-specific code.
+Improve existing runtime behavior for:
 
-## 6. ACCEPTANCE
-* Contract fixtures detect accidental schema changes.
-* Diagnostics remain stable across human and JSON output modes.
-* A reference VS Code client can analyze and build without parsing terminal text.
-* All Stage 1-11 command-line workflows remain available without an IDE.
+* `cudaMemcpyDefault` device/host inference edge cases;
+* zero-size memory operations;
+* repeated error reads through `cudaGetLastError` and `cudaPeekAtLastError`;
+* unsupported device IDs and single-device Apple Silicon reporting;
+* metrics for runtime state APIs and event timing.
 
-## 7. PERFORMANCE BUDGET AND MEASUREMENT
-* Warm incremental analysis response for the current small fixture: p95 <= 0.10 s.
-* Capability lookup from a warm service/cache: p95 <= 0.02 s.
-* JSON serialization must consume <= 10% of total command time for normal build
-  responses; large diagnostics/artifacts are referenced rather than embedded.
-* A long-running backend must remain bounded during a 1,000-edit stress test and
-  report project-state/cache memory; no monotonic unbounded growth is accepted.
-* CLI commands retain Stage 7-11 timing gates. IDE transport is measured
-  separately from compiler work.
+## 4. DEVICE PROPERTIES CONTRACT
+`cudaDeviceProp` must expose conservative, truthful values for Apple Silicon:
+
+* device name from Metal;
+* unified memory support;
+* maximum threads per block as MCU's supported CUDA block limit;
+* maximum thread dimensions and grid dimensions;
+* total global memory if available through Metal, otherwise a documented value;
+* warp size reported as CUDA logical 32 only when the API expects CUDA
+  compatibility, with a capability note that physical SIMD width is Metal-specific.
+
+Values must be stable and documented. They should not overclaim unsupported CUDA
+features.
+
+## 5. EVENT CONTRACT
+CUDA events map onto Stage 10 stream scheduling:
+
+* recording an event captures all work already submitted to that stream;
+* event synchronization waits for the captured stream work;
+* elapsed time reports milliseconds between two completed event records;
+* unsupported flags fail explicitly;
+* events retain resources until destroyed;
+* destroying an in-flight event is safe and deterministic.
+
+## 6. TESTS
+Add runtime fixtures that compile normal CUDA host code using `cuda_runtime.h`:
+
+* device count/properties smoke test;
+* set/get invalid and valid device behavior;
+* last-error and peek-last-error behavior;
+* event timing over stream work;
+* event timing around `cudaMemcpyAsync` and kernels;
+* occupancy helper returns conservative usable geometry;
+* invalid flags and invalid handles produce CUDA-like error codes.
+
+The 20-case CUDA checker should gain runtime API cases after the focused tests
+are stable.
+
+## 7. ACCEPTANCE
+* Existing Stage 1-11 tests remain green.
+* A CUDA file that uses only supported CUDA Runtime APIs and no auxiliary
+  libraries compiles and runs through `mcu compile` without source edits.
+* Unsupported runtime APIs fail with source-mapped or runtime diagnostics rather
+  than silently compiling with wrong semantics.
+* Event timing is deterministic enough for correctness tests and reports metrics.
+* Capability reporting in the following stage can list supported runtime APIs
+  from a single source of truth.
+
+## 8. NON-GOALS
+* Warp intrinsics and CUDA Graphs; these move to Stage 14.
+* External library expansion beyond Stage 11 cuBLAS SGEMM.
+* Full multi-GPU behavior. Apple Silicon is reported as one supported logical
+  device unless a future backend supports multiple Metal devices.
+* Aggressive performance tuning. Optimization remains Stage 15.

@@ -118,6 +118,8 @@ def build_native(
         "Foundation",
         "-framework",
         "Metal",
+        "-framework",
+        "MetalPerformanceShaders",
         "-o",
         str(executable),
     ]

@@ -50,7 +50,8 @@ bool ArtifactCatalog::ensure(id<MTLDevice> device, std::string& error) {
     }
     NSData* data = [NSData dataWithContentsOfFile:routingPath options:0 error:&nativeError];
     NSDictionary* root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&nativeError] : nil;
-    if (!root || [root[@"schema_version"] integerValue] != 1) {
+    NSInteger schema = root ? [root[@"schema_version"] integerValue] : 0;
+    if (!root || (schema != 1 && schema != 2)) {
         error = nativeError ? [[nativeError localizedDescription] UTF8String] : "Unsupported routing schema";
         return false;
     }

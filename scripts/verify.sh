@@ -139,6 +139,10 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
     --output /tmp/mcu_stage10_report.json
 
   echo
+  echo "== stage11 cuBLAS adapter =="
+  /usr/bin/time -p python scripts/verify_stage11.py
+
+  echo
   echo "== CUDA easy-to-stress checker (20 cases) =="
   /usr/bin/time -p python scripts/cuda_checker.py --tier all \
     --output /tmp/mcu_cuda_checker.json

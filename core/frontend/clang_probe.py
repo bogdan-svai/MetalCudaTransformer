@@ -18,6 +18,10 @@ CUDA_STUBS = "\n".join([
     "enum cudaError_t { cudaSuccess = 0 };",
     "enum cudaMemcpyKind { cudaMemcpyHostToHost, cudaMemcpyHostToDevice, cudaMemcpyDeviceToHost, cudaMemcpyDeviceToDevice, cudaMemcpyDefault };",
     "struct mcuStream; using cudaStream_t = mcuStream*;",
+    "struct mcuCublasContext; using cublasHandle_t = mcuCublasContext*;",
+    "enum cublasStatus_t { CUBLAS_STATUS_SUCCESS = 0, CUBLAS_STATUS_NOT_INITIALIZED = 1, CUBLAS_STATUS_INVALID_VALUE = 7, CUBLAS_STATUS_EXECUTION_FAILED = 13, CUBLAS_STATUS_NOT_SUPPORTED = 15 };",
+    "enum cublasOperation_t { CUBLAS_OP_N = 0, CUBLAS_OP_T = 1, CUBLAS_OP_C = 2 };",
+    "enum cublasPointerMode_t { CUBLAS_POINTER_MODE_HOST = 0, CUBLAS_POINTER_MODE_DEVICE = 1 };",
     "template <typename Kernel, typename... Args> cudaError_t cudaLaunch(Kernel kernel, dim3 blocks, dim3 threads, Args... args);",
     "template <typename Kernel, typename... Args> cudaError_t cudaLaunch(Kernel kernel, int blocks, int threads, Args... args);",
     "template <typename Kernel, typename... Args> cudaError_t cudaLaunchShared(Kernel kernel, dim3 blocks, dim3 threads, unsigned long shared, Args... args);",
@@ -35,6 +39,13 @@ CUDA_STUBS = "\n".join([
     "cudaError_t cudaStreamDestroy(cudaStream_t);",
     "cudaError_t cudaStreamSynchronize(cudaStream_t);",
     "cudaError_t cudaGetLastError();",
+    "cublasStatus_t cublasCreate(cublasHandle_t*);",
+    "cublasStatus_t cublasDestroy(cublasHandle_t);",
+    "cublasStatus_t cublasSetStream(cublasHandle_t, cudaStream_t);",
+    "cublasStatus_t cublasGetStream(cublasHandle_t, cudaStream_t*);",
+    "cublasStatus_t cublasSetPointerMode(cublasHandle_t, cublasPointerMode_t);",
+    "cublasStatus_t cublasGetPointerMode(cublasHandle_t, cublasPointerMode_t*);",
+    "cublasStatus_t cublasSgemm(cublasHandle_t, cublasOperation_t, cublasOperation_t, int, int, int, const float*, const float*, int, const float*, int, const float*, float*, int);",
     "void __syncthreads();",
     "template <typename T> T atomicAdd(T*, T);",
     "template <typename T> T atomicCAS(T*, T, T);",
@@ -82,7 +93,7 @@ def probe_with_clang(sources, read_text, compile_context=None):
                     stripped = line.lstrip()
                     is_local_include = stripped.startswith('#include "')
                     is_cuda_include = stripped.startswith("#include") and (
-                        "cuda_runtime.h" in line or "cuda.h" in line
+                        "cuda_runtime.h" in line or "cuda.h" in line or "cublas_v2.h" in line
                     )
                     handle.write("\n" if is_local_include or is_cuda_include else line + "\n")
         try:
