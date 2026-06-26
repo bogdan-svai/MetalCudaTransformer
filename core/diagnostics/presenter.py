@@ -1,14 +1,21 @@
 import json
 
+from core.tooling.contract import with_contract
+
 
 SUCCESS = "\033[92m[SUCCESS]\033[0m"
 WARNING = "\033[93m[WARNING]\033[0m"
 ERROR = "\033[91m[CRITICAL ERROR]\033[0m"
 
 
-def emit(payload, as_json):
+def emit(payload, as_json, exit_code=None):
+    payload = with_contract(payload, exit_code=exit_code)
     if as_json:
         print(json.dumps(payload, sort_keys=True))
+        return
+
+    if payload.get("command") == "capabilities":
+        _emit_capabilities(payload)
         return
 
     metadata = payload.get("metadata", {})
@@ -84,6 +91,8 @@ def format_location(item):
 
 
 def _stage_name(payload):
+    if payload.get("command") == "analyze":
+        return "Stage 13 analyze"
     if payload.get("command") in {"compile", "run", "make", "nvcc-driver"}:
         return f"Stage 7 {payload['command']}"
     if payload.get("command") != "build":
@@ -96,3 +105,16 @@ def _stage_name(payload):
     plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
     optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())
     return "Stage 3 optimized build" if optimized else "Stage 2 build"
+
+
+def _emit_capabilities(payload):
+    print(f"MCU Stage 13 capabilities: {payload['mcu_version']}")
+    print(f"Contract: {payload['contract']} schema={payload['schema_version']}")
+    print(f"Runtime ABI: {payload['runtime_abi']}")
+    print(f"Runtime APIs: {len(payload.get('runtime_apis', []))}")
+    supported_libraries = sorted({
+        item["library"]
+        for item in payload.get("library_adapters", [])
+        if item.get("status") == "supported"
+    })
+    print("Libraries: " + (", ".join(supported_libraries) if supported_libraries else "-"))

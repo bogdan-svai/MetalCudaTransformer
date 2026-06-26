@@ -1,55 +1,331 @@
 # SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
-# SYSTEM LAYER: STAGE 13 - STABLE TOOLING API & IDE INTEGRATION
+# SYSTEM LAYER: STAGE 13 - STABLE TOOLING CONTRACT
 # -----------------------------------------------------------------------------
 
-## 1. OBJECTIVE
-Stage 13 freezes the machine-facing MCU contract and exposes compiler services to
-editor tooling without coupling compiler internals to a specific IDE.
+## 1. Objective
+Stage 13 makes MCU usable by tools, scripts, IDE extensions, and checkers without
+parsing human terminal text.
 
-This stage follows CUDA Runtime API compatibility so capability reporting can
-describe a more realistic compiler/runtime surface.
+The goal is not to add new CUDA semantics. The goal is to freeze the public
+machine-facing contract around the compiler/runtime features implemented in
+Stages 1-12.
 
-## 1.1 KNOWN PROBLEMS TO CLOSE
-* Current human output is useful interactively but phase timings, cache events,
-  capabilities, and diagnostics are not a frozen machine-readable contract.
-* Repeated IDE checks would pay process and frontend startup unless a service or
-  reusable project state is introduced.
-* Schema stability can slow internal refactoring unless versioning and adapters
-  are owned at serialization boundaries.
+After this stage, a caller must be able to ask:
 
-## 2. JSON CONTRACTS
-Versioned schemas are required for check, build, compile, run, make, diagnostics,
-capabilities, artifacts, cache events, and timing metrics. With `--json`, stdout
-contains exactly one JSON document and human logs use stderr when needed.
+* What CUDA/CUDA-like features does MCU support?
+* Which runtime APIs and libraries are supported, partial, planned, or unsupported?
+* What diagnostics apply to this source file or project?
+* Did a command fail because the user code is invalid, or because the toolchain
+  invocation/environment is invalid?
+* Which schema version is this response using?
 
-## 3. CAPABILITY REPORT
-Expose supported CUDA syntax, types, qualifiers, intrinsics, runtime APIs, NVCC
-flags, architecture constraints, and library adapters. Each entry includes status,
-supported signatures, target requirements, and the stage that introduced it.
+## 2. Why This Stage Exists
+Stages 1-12 focused on compiler correctness, native execution, project builds,
+streams, cuBLAS, and CUDA runtime API coverage. Those stages made MCU useful from
+the command line, but the output contract is still too loose for an IDE or an
+automated compatibility checker.
 
-## 4. PROCESS CONTRACT
-* Exit 0: successful operation.
-* Exit 1: source, semantic, translation, or native compilation failure.
-* Exit 2: invalid invocation, missing toolchain, filesystem, or infrastructure error.
-* Cancellation and timeout behavior must be explicit and machine-readable.
+Without Stage 13:
 
-## 5. IDE BACKEND
-Provide stable requests for project analysis, diagnostics, capability lookup,
-build progress, and source-map navigation. Transport may be subprocess JSON or a
-long-running service, but compiler packages must not import editor-specific code.
+* scripts may depend on changing human text;
+* JSON payloads may accidentally change shape between stages;
+* users cannot quickly answer "does MCU support this CUDA feature?";
+* future refactors can break editor/checker integrations silently;
+* errors from user code and infrastructure errors are easy to mix up.
 
-## 6. ACCEPTANCE
-* Contract fixtures detect accidental schema changes.
-* Diagnostics remain stable across human and JSON output modes.
-* A reference VS Code client can analyze and build without parsing terminal text.
-* All Stage 1-12 command-line workflows remain available without an IDE.
+## 3. Scope
 
-## 7. PERFORMANCE BUDGET AND MEASUREMENT
-* Warm incremental analysis response for the current small fixture: p95 <= 0.10 s.
-* Capability lookup from a warm service/cache: p95 <= 0.02 s.
-* JSON serialization must consume <= 10% of total command time for normal build
-  responses; large diagnostics/artifacts are referenced rather than embedded.
-* A long-running backend must remain bounded during a 1,000-edit stress test and
-  report project-state/cache memory; no monotonic unbounded growth is accepted.
-* CLI commands retain Stage 7-12 timing gates. IDE transport is measured
-  separately from compiler work.
+### 3.1 In Scope
+Stage 13 must implement:
+
+* versioned JSON envelopes for public MCU commands;
+* a capability report command;
+* a stable analysis command for editor/checker diagnostics;
+* documented exit-code classification;
+* tests that pin the Stage 13 contract;
+* documentation for unsupported CUDA features at this point in the project.
+
+### 3.2 Out of Scope
+Stage 13 must not implement:
+
+* warp intrinsics;
+* CUDA Graphs;
+* performance autotuning;
+* new CUDA libraries beyond the adapters already implemented;
+* a full VS Code extension UI;
+* a daemon/LSP server.
+
+Those belong to later stages:
+
+* Stage 14: warp/SIMDGroup semantics and CUDA Graphs.
+* Stage 15: performance engineering and autotuning.
+* Future library stages: cuRAND, cuFFT, cuSPARSE, cuSOLVER, and other adapter
+  families.
+
+## 4. Public Commands
+
+### 4.1 `mcu capabilities`
+Reports the compiler's supported surface.
+
+Required modes:
+
+* `mcu capabilities`
+  Human-readable summary.
+* `mcu capabilities --json`
+  Exactly one JSON document on stdout.
+
+The JSON payload must include:
+
+* `schema_version`
+* `contract`
+* `mcu_version`
+* `runtime_abi`
+* `target`
+* `syntax`
+* `runtime_apis`
+* `intrinsics`
+* `nvcc_flags`
+* `library_adapters`
+* `diagnostics`
+* `exit_status`
+
+Each capability entry must include:
+
+* `name`
+* `category`
+* `status`
+* `stage`
+* `signatures`
+* `target_requirements`
+* `notes`
+
+Allowed statuses:
+
+* `supported`
+* `partial`
+* `planned`
+* `unsupported`
+
+### 4.2 `mcu analyze <path>`
+Runs the stable editor/checker analysis path for a source file or project without
+building a native executable.
+
+Required modes:
+
+* `mcu analyze <path>`
+  Human-readable analysis summary.
+* `mcu analyze <path> --json`
+  Exactly one JSON document on stdout.
+
+The JSON payload must include:
+
+* the same Stage 13 envelope fields;
+* `metadata` from the frontend;
+* structured `diagnostics`;
+* `timings`;
+* a compact capability summary that tells tools which contract and runtime ABI
+  were used during analysis.
+
+`mcu analyze` is intentionally close to `mcu check`, but the name is tooling
+oriented and its output is part of the Stage 13 contract.
+
+### 4.3 Existing Commands
+The following commands remain supported and must receive the same Stage 13 JSON
+envelope when `--json` is used:
+
+* `mcu check`
+* `mcu build`
+* `mcu compile`
+* `mcu run`
+* `mcu make`
+* `mcu nvcc-driver`
+
+Stage 13 must not break their existing behavior.
+
+## 5. JSON Envelope Contract
+Every public JSON response must include:
+
+```json
+{
+  "schema_version": 1,
+  "contract": "mcu.tooling.v1",
+  "mcu_version": "0.13.0",
+  "ok": true,
+  "command": "capabilities",
+  "diagnostics": [],
+  "exit_status": {
+    "code": 0,
+    "class": "success"
+  }
+}
+```
+
+The envelope is owned at the serialization boundary. Internal compiler modules
+may keep their own data models, but public commands must pass through the Stage
+13 contract layer before emission.
+
+## 6. Diagnostics Contract
+Diagnostics remain dictionaries with stable fields:
+
+* `code`
+* `severity`
+* `message`
+* `file`
+* `line`
+* `column`
+
+Additional fields are allowed only when they are additive and optional, for
+example `argument` or `phase`.
+
+Severity values:
+
+* `error`
+* `warning`
+* `info`
+
+Diagnostics should point to CUDA source locations whenever source mapping data
+exists. Metal/native compiler diagnostics should keep the original compiler
+message but map `file`, `line`, and `column` back when possible.
+
+## 7. Exit Status Contract
+Stage 13 defines the public process-level meaning:
+
+* Exit `0`: command succeeded.
+* Exit `1`: source, semantic, translation, Metal compilation, native
+  compilation, or link failure caused by user/project input.
+* Exit `2`: invalid invocation, missing path, missing toolchain, filesystem
+  problem, or infrastructure failure.
+
+`mcu run` may return the executed program's non-zero status for compatibility
+with normal command-line workflows. Its JSON envelope must classify such failures
+as `program_failure`.
+
+## 8. Capability Report Content
+
+### 8.1 Syntax and Frontend
+Must report:
+
+* CUDA triple-chevron launches;
+* `cudaLaunch` compatibility macros;
+* `__global__`;
+* `__device__`;
+* `__host__ __device__` partial support;
+* `__shared__`;
+* dynamic shared memory;
+* `dim3`;
+* multi-file projects;
+* separate compile/link;
+* Make/NVCC shim support;
+* warp intrinsics as planned;
+* CUDA Graphs as planned.
+
+### 8.2 Runtime APIs
+Must report the Stage 4, Stage 10, and Stage 12 runtime API subset:
+
+* memory allocation/free/copy/memset;
+* synchronization;
+* streams;
+* last-error APIs;
+* device management;
+* events;
+* occupancy helper subset.
+
+### 8.3 Intrinsics
+Must report the registry-backed device intrinsic surface:
+
+* CUDA geometry builtins;
+* `__syncthreads`;
+* typed integer atomics;
+* device-side `memset` lowering.
+
+### 8.4 NVCC Flags
+Must report supported driver flags:
+
+* `-c`
+* `-dc`
+* `-o`
+* `-I`
+* `-D`
+* `-U`
+* `-O0/-O1/-O2/-O3`
+* dependency flags
+* `-L/-l`
+* partial `-Xcompiler`
+
+Unsupported/planned flags must be explicit where known.
+
+### 8.5 Library Adapters
+Must report:
+
+* supported cuBLAS Stage 11 symbols;
+* planned/unsupported auxiliary libraries.
+
+The report must not claim broad cuBLAS, cuRAND, cuFFT, cuSPARSE, or cuSOLVER
+coverage unless the adapter exists and is tested.
+
+## 9. Testing Requirements
+Stage 13 tests must cover:
+
+* `mcu capabilities --json` emits exactly one JSON document;
+* top-level envelope fields exist and are stable;
+* capability entries include status, stage, signatures, and target requirements;
+* runtime APIs include Stage 12 APIs such as `cudaEventRecord` and
+  `cudaGetDeviceProperties`;
+* library adapters include `cublasSgemm`;
+* `mcu analyze --json` returns diagnostics and metadata without building;
+* invalid analyze paths return exit `2` with `InvalidTargetPath`;
+* existing Stage 1-12 tests still pass.
+
+## 10. Performance Requirements
+Stage 13 is mainly a contract layer, so it should not materially slow normal
+builds.
+
+Targets:
+
+* `mcu capabilities --json`: p95 <= 0.02 s on a warm local machine.
+* `mcu analyze` on the small complex fixture: p95 <= 0.10 s after warm imports.
+* JSON envelope insertion must be O(payload size) and must not trigger compiler
+  work.
+
+Stage 13 does not require a daemon. If a daemon/LSP is added later, it must reuse
+this contract rather than inventing a separate schema.
+
+## 11. Acceptance Criteria
+Stage 13 is complete when:
+
+* all Stage 13 tests pass;
+* full `make verify` still passes;
+* `mcu capabilities --json` can be consumed by a script with no terminal parsing;
+* `mcu analyze --json <path>` can be consumed by an editor/checker with no
+  terminal parsing;
+* the capability report truthfully describes unsupported major features;
+* `planning/Requirements.txt` still matches the stage split.
+
+## 12. Implementation Notes
+Recommended module split:
+
+* `core/tooling/contract.py`
+  Owns schema versioning, JSON envelope, and exit-code classification.
+* `core/tooling/capabilities.py`
+  Owns capability report generation from registries and explicit runtime data.
+* `core/tooling/analyze.py`
+  Owns the stable analysis entry point.
+
+Compiler internals should not import editor-specific code. Editors and checkers
+should call public commands or future tooling transport layers.
+
+## 13. Known Limits After This Stage
+Even when Stage 13 is complete, MCU is not a full CUDA compiler.
+
+Still unsupported or incomplete:
+
+* warp intrinsics;
+* CUDA Graphs;
+* dynamic parallelism;
+* cooperative groups;
+* texture/surface memory;
+* most CUDA libraries outside the explicit cuBLAS subset;
+* broad template-heavy CUDA C++ compatibility;
+* full NVCC flag compatibility.
+
+This stage makes those limits visible and machine-readable instead of implicit.

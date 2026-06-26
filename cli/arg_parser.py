@@ -57,6 +57,32 @@ def build_parser():
         help="Native build directory (used with --native)",
     )
 
+    analyze = subcommands.add_parser(
+        "analyze",
+        help="Run the stable Stage 13 tooling analysis contract for a source tree",
+    )
+    analyze.add_argument("path", help="Source file or directory to analyze")
+    analyze.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a single JSON document to stdout",
+    )
+    analyze.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include parser diagnostics in metadata",
+    )
+
+    capabilities = subcommands.add_parser(
+        "capabilities",
+        help="Report MCU's supported CUDA, runtime, NVCC, and library surface",
+    )
+    capabilities.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a single JSON document to stdout",
+    )
+
     for name, help_text in [
         ("compile", "Compile CUDA/C++ inputs into an MCU object or native executable"),
         ("run", "Compile and run a native CUDA-to-Metal executable"),

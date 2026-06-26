@@ -9,6 +9,8 @@ from core.application.pipeline import CompilerPipeline
 from core.application.stage7 import execute_compile, execute_invocation, execute_make, execute_run
 from core.diagnostics.presenter import emit
 from core.driver import NvccInvocationError, parse_nvcc_arguments
+from core.tooling.analyze import analyze_path
+from core.tooling.capabilities import capability_payload
 from core.version import MCU_VERSION
 
 
@@ -30,11 +32,16 @@ def main(argv=None):
             native=args.native,
             output=args.output,
         )
+    elif args.command == "analyze":
+        result = analyze_path(args.path, verbose=args.verbose)
+    elif args.command == "capabilities":
+        from core.application.pipeline import CommandResult
+        result = CommandResult(0, capability_payload())
     else:
         parser.error(f"Unsupported command: {args.command}")
         return 2
 
-    emit(result.payload, args.json)
+    emit(result.payload, args.json, exit_code=result.exit_code)
     return result.exit_code
 
 
@@ -75,7 +82,7 @@ def _run_stage7(argv, parser):
         else:
             result = execute_invocation(project_root, invocation, command="nvcc-driver")
     _append_driver_metrics(command, result.payload)
-    emit(result.payload, as_json)
+    emit(result.payload, as_json, exit_code=result.exit_code)
     return result.exit_code
 
 

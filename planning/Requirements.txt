@@ -346,13 +346,26 @@
 
 ## 13.1 Functional Requirements
 * REQ-13.1.1: Stable JSON Contracts
-  Freeze versioned JSON output for check, compile, run, and make commands.
+  Freeze a versioned public JSON envelope for check, build, compile, run, make,
+  nvcc-driver, capabilities, and analyze commands. Every public JSON payload must
+  expose schema_version, contract, mcu_version, diagnostics, and exit_status.
 * REQ-13.1.2: Capability Reporting
-  Expose a machine-readable report of supported CUDA syntax, runtime APIs, intrinsics, compiler flags, and library adapters.
+  Expose `mcu capabilities` as a machine-readable report of supported CUDA
+  syntax, runtime APIs, intrinsics, compiler flags, target constraints, and
+  library adapters. Unsupported/planned major CUDA features must be explicit.
 * REQ-13.1.3: Exit Status Contract
-  Exit status 0 means success, 1 means source or semantic failure, and 2 means infrastructure or invocation failure.
+  Exit status 0 means success, 1 means source/semantic/translation/native
+  failure caused by project input, and 2 means infrastructure, missing path,
+  missing toolchain, filesystem, or invocation failure. `mcu run` may preserve
+  the executed program's exit status but must classify it as program_failure in
+  JSON.
 * REQ-13.1.4: IDE Backend
-  Provide the stable backend contract required by a VS Code extension without coupling compiler components to editor-specific logic.
+  Provide `mcu analyze` as the stable editor/checker analysis entry point
+  without coupling compiler components to editor-specific code. A future daemon
+  or LSP must reuse this contract instead of creating a separate schema.
+* REQ-13.1.5: Contract Tests
+  Add tests that pin the Stage 13 envelope, capability report, analyze command,
+  runtime API visibility, library adapter visibility, and invalid-path behavior.
 
 
 # -----------------------------------------------------------------------------
