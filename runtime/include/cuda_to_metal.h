@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <type_traits>
 #include <utility>
 
@@ -21,6 +22,8 @@ enum cudaError_t {
     cudaErrorInitializationError = 3,
     cudaErrorLaunchFailure = 4,
     cudaErrorNotSupported = 5,
+    cudaErrorInvalidDevice = 6,
+    cudaErrorInvalidResourceHandle = 7,
 };
 
 enum cudaMemcpyKind {
@@ -33,6 +36,50 @@ enum cudaMemcpyKind {
 
 struct mcuStream;
 using cudaStream_t = mcuStream*;
+struct mcuEvent;
+using cudaEvent_t = mcuEvent*;
+
+enum cudaEventFlags {
+    cudaEventDefault = 0,
+    cudaEventBlockingSync = 1,
+    cudaEventDisableTiming = 2,
+    cudaEventInterprocess = 4,
+};
+
+struct cudaDeviceProp {
+    char name[256];
+    std::size_t totalGlobalMem;
+    std::size_t sharedMemPerBlock;
+    int regsPerBlock;
+    int warpSize;
+    std::size_t memPitch;
+    int maxThreadsPerBlock;
+    int maxThreadsDim[3];
+    int maxGridSize[3];
+    int clockRate;
+    std::size_t totalConstMem;
+    int major;
+    int minor;
+    int textureAlignment;
+    int deviceOverlap;
+    int multiProcessorCount;
+    int kernelExecTimeoutEnabled;
+    int integrated;
+    int canMapHostMemory;
+    int computeMode;
+    int concurrentKernels;
+    int ECCEnabled;
+    int pciBusID;
+    int pciDeviceID;
+    int tccDriver;
+    int memoryClockRate;
+    int memoryBusWidth;
+    int l2CacheSize;
+    int maxThreadsPerMultiProcessor;
+    int unifiedAddressing;
+    int managedMemory;
+    int asyncEngineCount;
+};
 
 cudaError_t cudaMalloc(void** device_ptr, std::size_t size);
 cudaError_t cudaFree(void* device_ptr);
@@ -50,12 +97,41 @@ cudaError_t cudaStreamCreate(cudaStream_t* stream);
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaGetLastError();
+cudaError_t cudaPeekAtLastError();
 const char* cudaGetErrorString(cudaError_t error);
+cudaError_t cudaGetDeviceCount(int* count);
+cudaError_t cudaGetDevice(int* device);
+cudaError_t cudaSetDevice(int device);
+cudaError_t cudaGetDeviceProperties(cudaDeviceProp* properties, int device);
+cudaError_t cudaDeviceReset();
+cudaError_t cudaEventCreate(cudaEvent_t* event);
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t* event, unsigned int flags);
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = nullptr);
+cudaError_t cudaEventSynchronize(cudaEvent_t event);
+cudaError_t cudaEventElapsedTime(float* milliseconds, cudaEvent_t start, cudaEvent_t end);
+cudaError_t cudaEventDestroy(cudaEvent_t event);
 cudaError_t mcuSetArtifactDirectory(const char* path);
 
 template <typename T>
 cudaError_t cudaMalloc(T** device_ptr, std::size_t size) {
     return cudaMalloc(reinterpret_cast<void**>(device_ptr), size);
+}
+
+template <typename Kernel>
+cudaError_t cudaOccupancyMaxPotentialBlockSize(
+    int* min_grid_size,
+    int* block_size,
+    Kernel,
+    std::size_t dynamic_shared_memory_size = 0,
+    int block_size_limit = 0
+) {
+    if (!min_grid_size || !block_size || dynamic_shared_memory_size > 48 * 1024) {
+        return cudaErrorInvalidValue;
+    }
+    int limit = block_size_limit > 0 && block_size_limit < 1024 ? block_size_limit : 1024;
+    *block_size = limit;
+    *min_grid_size = 1;
+    return cudaSuccess;
 }
 
 namespace mcu {

@@ -184,9 +184,9 @@ def test_four_value_cuda_launch_configuration_lowers_stream():
     assert "cudaLaunchSharedOnStream(work, 2, 64, 128, stream, data);" in transformed
 
 
-def test_cuda_checker_contains_twenty_ordered_tiered_cases():
+def test_cuda_checker_contains_ordered_tiered_cases():
     cases = ROOT / "tests" / "cuda_suite" / "cases"
     manifests = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(cases.glob("*.json"))]
-    assert [item["id"] for item in manifests] == [f"{index:02d}" for index in range(1, 21)]
+    assert [item["id"] for item in manifests] == [f"{index:02d}" for index in range(1, 24)]
     assert {item["tier"] for item in manifests} == {"easy", "medium", "hard", "stress"}
     assert all((ROOT / item["program"]).is_file() for item in manifests)

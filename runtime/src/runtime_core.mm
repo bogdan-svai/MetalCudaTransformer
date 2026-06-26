@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <algorithm>
@@ -465,12 +466,206 @@ public:
             ? succeed()
             : fail(cudaErrorLaunchFailure, error);
     }
+
+    cudaError_t getDeviceCount(int* count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        mcu::runtime::incrementRuntimeCounter("device_api_calls");
+        if (!count) {
+            return fail(cudaErrorInvalidValue, "cudaGetDeviceCount requires a non-null output");
+        }
+        std::string error;
+        if (!ensureRuntime(error)) {
+            return fail(cudaErrorInitializationError, error);
+        }
+        *count = 1;
+        return succeed();
+    }
+
+    cudaError_t getDevice(int* device) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        mcu::runtime::incrementRuntimeCounter("device_api_calls");
+        if (!device) {
+            return fail(cudaErrorInvalidValue, "cudaGetDevice requires a non-null output");
+        }
+        *device = current_device_;
+        return succeed();
+    }
+
+    cudaError_t setDevice(int device) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        mcu::runtime::incrementRuntimeCounter("device_api_calls");
+        if (device != 0) {
+            return fail(cudaErrorInvalidDevice, "MCU exposes only logical CUDA device 0");
+        }
+        std::string error;
+        if (!ensureRuntime(error)) {
+            return fail(cudaErrorInitializationError, error);
+        }
+        current_device_ = 0;
+        return succeed();
+    }
+
+    cudaError_t getDeviceProperties(cudaDeviceProp* properties, int device) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        mcu::runtime::incrementRuntimeCounter("device_api_calls");
+        if (!properties) {
+            return fail(cudaErrorInvalidValue, "cudaGetDeviceProperties requires a non-null output");
+        }
+        if (device != 0) {
+            return fail(cudaErrorInvalidDevice, "MCU exposes only logical CUDA device 0");
+        }
+        std::string error;
+        if (!ensureRuntime(error)) {
+            return fail(cudaErrorInitializationError, error);
+        }
+        std::memset(properties, 0, sizeof(cudaDeviceProp));
+        NSString* device_name = [context_.device() name];
+        const char* name = device_name ? [device_name UTF8String] : "Apple Metal device";
+        std::strncpy(properties->name, name, sizeof(properties->name) - 1);
+        properties->totalGlobalMem = static_cast<std::size_t>([context_.device() recommendedMaxWorkingSetSize]);
+        properties->sharedMemPerBlock = 48 * 1024;
+        properties->regsPerBlock = 65536;
+        properties->warpSize = 32;
+        properties->maxThreadsPerBlock = 1024;
+        properties->maxThreadsDim[0] = 1024;
+        properties->maxThreadsDim[1] = 1024;
+        properties->maxThreadsDim[2] = 64;
+        properties->maxGridSize[0] = 2147483647;
+        properties->maxGridSize[1] = 65535;
+        properties->maxGridSize[2] = 65535;
+        properties->major = 1;
+        properties->minor = 0;
+        properties->integrated = 1;
+        properties->unifiedAddressing = 1;
+        properties->managedMemory = 1;
+        properties->concurrentKernels = 1;
+        properties->asyncEngineCount = 1;
+        properties->multiProcessorCount = 1;
+        properties->maxThreadsPerMultiProcessor = 1024;
+        return succeed();
+    }
+
+    cudaError_t resetDevice() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        mcu::runtime::incrementRuntimeCounter("device_api_calls");
+        std::string error;
+        if (!streams_.synchronizeAll(error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
+        last_error_ = cudaSuccess;
+        last_message_.clear();
+        return cudaSuccess;
+    }
+
+    cudaError_t createEvent(cudaEvent_t* event, unsigned int flags) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        if (!event) {
+            return fail(cudaErrorInvalidValue, "cudaEventCreate requires a non-null output");
+        }
+        if (flags & (cudaEventDisableTiming | cudaEventInterprocess)) {
+            return fail(cudaErrorNotSupported, "MCU does not support cudaEventDisableTiming or cudaEventInterprocess");
+        }
+        unsigned int allowed = cudaEventDefault | cudaEventBlockingSync;
+        if (flags & ~allowed) {
+            return fail(cudaErrorInvalidValue, "cudaEventCreateWithFlags received unsupported flags");
+        }
+        cudaEvent_t handle = new (std::nothrow) mcuEvent{
+            next_event_identifier_++,
+            flags,
+            true,
+            false,
+            false,
+            std::chrono::steady_clock::time_point{},
+        };
+        if (!handle) {
+            return fail(cudaErrorMemoryAllocation, "cudaEvent allocation failed");
+        }
+        *event = handle;
+        mcu::runtime::incrementRuntimeCounter("events_created");
+        return succeed();
+    }
+
+    cudaError_t recordEvent(cudaEvent_t event, cudaStream_t stream) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        if (!validEvent(event)) {
+            return fail(cudaErrorInvalidResourceHandle, "cudaEventRecord received an invalid event");
+        }
+        std::string error;
+        if (!ensureRuntime(error)) {
+            return fail(cudaErrorInitializationError, error);
+        }
+        if (!streams_.get(stream, error)) {
+            return fail(cudaErrorInvalidValue, error);
+        }
+        if (!streams_.synchronize(stream, error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
+        event->timestamp = std::chrono::steady_clock::now();
+        event->recorded = true;
+        event->synchronized = true;
+        mcu::runtime::incrementRuntimeCounter("events_recorded");
+        return succeed();
+    }
+
+    cudaError_t synchronizeEvent(cudaEvent_t event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        if (!validEvent(event)) {
+            return fail(cudaErrorInvalidResourceHandle, "cudaEventSynchronize received an invalid event");
+        }
+        if (!event->recorded) {
+            return fail(cudaErrorInvalidResourceHandle, "cudaEventSynchronize received an unrecorded event");
+        }
+        event->synchronized = true;
+        mcu::runtime::incrementRuntimeCounter("event_synchronizations");
+        return succeed();
+    }
+
+    cudaError_t elapsedEventTime(float* milliseconds, cudaEvent_t start, cudaEvent_t end) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        if (!milliseconds) {
+            return fail(cudaErrorInvalidValue, "cudaEventElapsedTime requires a non-null output");
+        }
+        if (!validEvent(start) || !validEvent(end) || !start->recorded || !end->recorded) {
+            return fail(cudaErrorInvalidResourceHandle, "cudaEventElapsedTime received invalid or unrecorded events");
+        }
+        auto duration = std::chrono::duration<double, std::milli>(end->timestamp - start->timestamp).count();
+        *milliseconds = static_cast<float>(duration < 0.0 ? 0.0 : duration);
+        mcu::runtime::recordRuntimeMetric("event_elapsed_query", static_cast<double>(*milliseconds) / 1000.0);
+        return succeed();
+    }
+
+    cudaError_t destroyEvent(cudaEvent_t event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
+        if (!validEvent(event)) {
+            return fail(cudaErrorInvalidResourceHandle, "cudaEventDestroy received an invalid event");
+        }
+        event->alive = false;
+        delete event;
+        mcu::runtime::incrementRuntimeCounter("events_destroyed");
+        return succeed();
+    }
+
     cudaError_t takeLastError() {
         std::lock_guard<std::mutex> lock(mutex_);
         cudaError_t result = last_error_;
         last_error_ = cudaSuccess;
         last_message_.clear();
         return result;
+    }
+
+    cudaError_t peekLastError() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_error_;
     }
 
 private:
@@ -540,12 +735,18 @@ private:
         return CUBLAS_STATUS_SUCCESS;
     }
 
+    static bool validEvent(cudaEvent_t event) {
+        return event && event->alive;
+    }
+
     std::mutex mutex_;
     mcu::runtime::DeviceContext context_;
     mcu::runtime::BufferRegistry buffers_;
     mcu::runtime::ArtifactCatalog artifacts_;
     mcu::runtime::PipelineCache pipelines_;
     mcu::runtime::StreamRegistry streams_;
+    std::uint64_t next_event_identifier_ = 1;
+    int current_device_ = 0;
     cudaError_t last_error_ = cudaSuccess;
     std::string last_message_;
 };
@@ -594,6 +795,51 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream) {
     @autoreleasepool { return runtimeFacade().synchronizeStream(stream); }
 }
 cudaError_t cudaGetLastError() { return runtimeFacade().takeLastError(); }
+cudaError_t cudaPeekAtLastError() { return runtimeFacade().peekLastError(); }
+
+cudaError_t cudaGetDeviceCount(int* count) {
+    @autoreleasepool { return runtimeFacade().getDeviceCount(count); }
+}
+
+cudaError_t cudaGetDevice(int* device) {
+    @autoreleasepool { return runtimeFacade().getDevice(device); }
+}
+
+cudaError_t cudaSetDevice(int device) {
+    @autoreleasepool { return runtimeFacade().setDevice(device); }
+}
+
+cudaError_t cudaGetDeviceProperties(cudaDeviceProp* properties, int device) {
+    @autoreleasepool { return runtimeFacade().getDeviceProperties(properties, device); }
+}
+
+cudaError_t cudaDeviceReset() {
+    @autoreleasepool { return runtimeFacade().resetDevice(); }
+}
+
+cudaError_t cudaEventCreate(cudaEvent_t* event) {
+    @autoreleasepool { return runtimeFacade().createEvent(event, cudaEventDefault); }
+}
+
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t* event, unsigned int flags) {
+    @autoreleasepool { return runtimeFacade().createEvent(event, flags); }
+}
+
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream) {
+    @autoreleasepool { return runtimeFacade().recordEvent(event, stream); }
+}
+
+cudaError_t cudaEventSynchronize(cudaEvent_t event) {
+    @autoreleasepool { return runtimeFacade().synchronizeEvent(event); }
+}
+
+cudaError_t cudaEventElapsedTime(float* milliseconds, cudaEvent_t start, cudaEvent_t end) {
+    @autoreleasepool { return runtimeFacade().elapsedEventTime(milliseconds, start, end); }
+}
+
+cudaError_t cudaEventDestroy(cudaEvent_t event) {
+    @autoreleasepool { return runtimeFacade().destroyEvent(event); }
+}
 
 const char* cudaGetErrorString(cudaError_t error) {
     switch (error) {
@@ -603,6 +849,8 @@ const char* cudaGetErrorString(cudaError_t error) {
         case cudaErrorInitializationError: return "runtime initialization failed";
         case cudaErrorLaunchFailure: return "kernel launch failed";
         case cudaErrorNotSupported: return "operation not supported";
+        case cudaErrorInvalidDevice: return "invalid device";
+        case cudaErrorInvalidResourceHandle: return "invalid resource handle";
     }
     return "unknown MCU runtime error";
 }

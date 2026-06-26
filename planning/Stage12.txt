@@ -3,97 +3,192 @@
 # -----------------------------------------------------------------------------
 
 ## 1. OBJECTIVE
-Stage 12 expands MCU's support for the main CUDA Runtime API. The goal is to run
-more ordinary CUDA programs that include `cuda_runtime.h` without requiring
-auxiliary CUDA libraries such as cuBLAS, cuRAND, or cuFFT.
+Stage 12 expands MCU's support for the main CUDA Runtime API used by ordinary
+CUDA programs that include `cuda_runtime.h`.
 
-This stage is about CUDA's primary runtime contract: device selection, device
-properties, events, error behavior, occupancy helpers, memory edge cases, and
-runtime state. It should not add warp intrinsics, CUDA Graphs, or new external
-library adapters.
+This is not a library-adapter stage. It targets CUDA's primary runtime surface:
+device selection, device properties, events, error behavior, occupancy helpers,
+and memory edge cases. The result should make more CUDA code compile without
+source edits before Stage 13 freezes tooling contracts.
 
-## 2. WHY THIS STAGE MOVES BEFORE TOOLING
-Stable JSON/tooling contracts are useful only after the runtime surface is less
-volatile. CUDA programs commonly use `cudaEvent*`, `cudaGetDeviceProperties`,
-`cudaGetDeviceCount`, and `cudaPeekAtLastError` even when they do not use any
-external library. These APIs should exist before freezing capability reporting.
+## 2. CURRENT GAP
+MCU already supports kernels, memory allocation/copy, memset, streams, async
+copies, shared memory, atomics, device helpers, Makefile integration, and a
+cuBLAS SGEMM adapter. Many CUDA programs still fail because they use common
+runtime calls around otherwise supported kernels:
+
+* query device count and properties before choosing launch geometry;
+* time work with `cudaEvent*`;
+* inspect errors with `cudaPeekAtLastError`;
+* call `cudaDeviceReset` during cleanup;
+* use occupancy helpers to choose a block size.
+
+Stage 12 fills these compatibility holes without claiming full CUDA runtime
+coverage.
 
 ## 3. FUNCTIONAL SCOPE
-Implement and test a validated subset of:
+Implement and test:
 
+### 3.1 Device management
 * `cudaGetDeviceCount`
 * `cudaGetDevice`
 * `cudaSetDevice`
 * `cudaGetDeviceProperties`
 * `cudaDeviceReset`
+
+Contract:
+* Apple Silicon is exposed as one logical CUDA device.
+* Device `0` is valid; any other device ID fails with `cudaErrorInvalidDevice`.
+* `cudaDeviceReset` synchronizes outstanding work, clears runtime-visible errors,
+  and keeps MCU usable for subsequent calls.
+
+### 3.2 Device properties
+Add a conservative `cudaDeviceProp` struct with fields commonly used by CUDA
+host code:
+
+* `name`
+* `totalGlobalMem`
+* `sharedMemPerBlock`
+* `regsPerBlock`
+* `warpSize`
+* `maxThreadsPerBlock`
+* `maxThreadsDim[3]`
+* `maxGridSize[3]`
+* `multiProcessorCount`
+* `clockRate`
+* `memoryClockRate`
+* `memoryBusWidth`
+* `major`
+* `minor`
+* `integrated`
+* `unifiedAddressing`
+* `managedMemory`
+* `concurrentKernels`
+* `asyncEngineCount`
+
+Values must be truthful or conservative. Unsupported NVIDIA-specific fields must
+not overclaim performance. `warpSize` is reported as CUDA logical 32 for
+compatibility, while Stage 14 owns physical SIMD/warp semantics.
+
+### 3.3 Runtime error API
+* `cudaGetLastError`
 * `cudaPeekAtLastError`
+* `cudaGetErrorString`
+
+Contract:
+* `cudaPeekAtLastError` returns the current error without clearing it.
+* `cudaGetLastError` returns and clears the current error.
+* successful calls clear the last error only when CUDA normally reports success
+  for that API family; diagnostics must stay useful.
+
+### 3.4 Events
 * `cudaEventCreate`
 * `cudaEventCreateWithFlags`
 * `cudaEventRecord`
 * `cudaEventSynchronize`
 * `cudaEventElapsedTime`
 * `cudaEventDestroy`
-* `cudaOccupancyMaxPotentialBlockSize` conservative subset
 
-Improve existing runtime behavior for:
+Supported flags:
+* `cudaEventDefault`
+* `cudaEventBlockingSync`
 
-* `cudaMemcpyDefault` device/host inference edge cases;
-* zero-size memory operations;
-* repeated error reads through `cudaGetLastError` and `cudaPeekAtLastError`;
-* unsupported device IDs and single-device Apple Silicon reporting;
-* metrics for runtime state APIs and event timing.
+Unsupported flags:
+* `cudaEventDisableTiming`
+* `cudaEventInterprocess`
 
-## 4. DEVICE PROPERTIES CONTRACT
-`cudaDeviceProp` must expose conservative, truthful values for Apple Silicon:
+Contract:
+* recording an event captures all work already submitted to the selected stream;
+* synchronizing an event waits for that captured stream work;
+* elapsed time reports milliseconds between completed records;
+* destroying a recorded event is safe after synchronizing captured work;
+* invalid/unrecorded events fail with CUDA-like error codes.
 
-* device name from Metal;
-* unified memory support;
-* maximum threads per block as MCU's supported CUDA block limit;
-* maximum thread dimensions and grid dimensions;
-* total global memory if available through Metal, otherwise a documented value;
-* warp size reported as CUDA logical 32 only when the API expects CUDA
-  compatibility, with a capability note that physical SIMD width is Metal-specific.
+### 3.5 Occupancy helper
+Implement a conservative subset of:
 
-Values must be stable and documented. They should not overclaim unsupported CUDA
-features.
+* `cudaOccupancyMaxPotentialBlockSize`
 
-## 5. EVENT CONTRACT
-CUDA events map onto Stage 10 stream scheduling:
+Contract:
+* accepts a kernel function pointer, dynamic shared memory, and block-size limit;
+* returns a block size that does not exceed MCU's supported threadgroup limit;
+* returns a minimum grid size of at least one;
+* does not promise NVIDIA occupancy equivalence.
 
-* recording an event captures all work already submitted to that stream;
-* event synchronization waits for the captured stream work;
-* elapsed time reports milliseconds between two completed event records;
-* unsupported flags fail explicitly;
-* events retain resources until destroyed;
-* destroying an in-flight event is safe and deterministic.
+### 3.6 Memory edge cases
+Refine:
 
-## 6. TESTS
-Add runtime fixtures that compile normal CUDA host code using `cuda_runtime.h`:
+* `cudaMemcpyDefault` inference;
+* zero-size `cudaMemcpy`, `cudaMemcpyAsync`, and `cudaMemset`;
+* invalid pointers and invalid copy kinds;
+* metrics for runtime state APIs and events.
+
+## 4. TEST PLAN
+Add focused native tests:
 
 * device count/properties smoke test;
-* set/get invalid and valid device behavior;
-* last-error and peek-last-error behavior;
-* event timing over stream work;
-* event timing around `cudaMemcpyAsync` and kernels;
+* valid and invalid `cudaSetDevice`;
+* `cudaPeekAtLastError` vs `cudaGetLastError`;
+* event timing around async copies and kernels;
+* event invalid flags and invalid handles;
 * occupancy helper returns conservative usable geometry;
-* invalid flags and invalid handles produce CUDA-like error codes.
+* zero-size memory operations stay successful where CUDA allows them.
 
-The 20-case CUDA checker should gain runtime API cases after the focused tests
-are stable.
+Add checker coverage after focused tests:
 
-## 7. ACCEPTANCE
-* Existing Stage 1-11 tests remain green.
-* A CUDA file that uses only supported CUDA Runtime APIs and no auxiliary
-  libraries compiles and runs through `mcu compile` without source edits.
-* Unsupported runtime APIs fail with source-mapped or runtime diagnostics rather
-  than silently compiling with wrong semantics.
-* Event timing is deterministic enough for correctness tests and reports metrics.
-* Capability reporting in the following stage can list supported runtime APIs
-  from a single source of truth.
+* runtime API easy case;
+* event timing medium case;
+* occupancy/device properties hard case.
 
-## 8. NON-GOALS
-* Warp intrinsics and CUDA Graphs; these move to Stage 14.
+## 5. ACCEPTANCE
+* Existing Stage 1-11 verification remains green.
+* A CUDA file using supported `cuda_runtime.h` APIs and no auxiliary libraries
+  compiles and runs through `mcu compile` without source edits.
+* Device properties are conservative and stable enough for launch selection.
+* Events time real queued work and report metrics.
+* Unsupported runtime APIs or flags fail explicitly.
+* Stage 13 capability reporting can consume a single runtime API registry.
+
+## 6. NON-GOALS
+* Warp intrinsics and CUDA Graphs; these remain Stage 14.
 * External library expansion beyond Stage 11 cuBLAS SGEMM.
-* Full multi-GPU behavior. Apple Silicon is reported as one supported logical
-  device unless a future backend supports multiple Metal devices.
-* Aggressive performance tuning. Optimization remains Stage 15.
+* Multi-GPU behavior.
+* NVIDIA-equivalent occupancy math.
+* Performance optimization beyond avoiding unnecessary synchronization.
+
+## 7. EXPECTED COMPATIBILITY IMPACT
+Before Stage 12, MCU is usable for many kernel-centric programs but fails on
+common runtime scaffolding. After Stage 12, CUDA programs without auxiliary
+libraries but with ordinary device queries, timing, and cleanup should require
+fewer source edits.
+
+Expected practical compatibility for CUDA code without warp/graph/texture:
+roughly 70-80 percent, assuming the device code itself uses supported language
+features.
+
+## 8. IMPLEMENTATION REPORT - 2026-06-26
+Implemented:
+
+* `cudaDeviceProp` and conservative Apple Silicon property reporting;
+* `cudaGetDeviceCount`, `cudaGetDevice`, `cudaSetDevice`,
+  `cudaGetDeviceProperties`, and `cudaDeviceReset`;
+* `cudaPeekAtLastError` with non-clearing semantics;
+* `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventRecord`,
+  `cudaEventSynchronize`, `cudaEventElapsedTime`, and `cudaEventDestroy`;
+* conservative templated `cudaOccupancyMaxPotentialBlockSize`;
+* runtime API frontend stubs for semantic probing;
+* host transformation for runtime-only `cuda_runtime.h` programs;
+* CUDA checker cases 21-23 for device properties, events, and error behavior;
+* MCU version 0.12.0 and runtime ABI 5.
+
+The event implementation is correctness-first: `cudaEventRecord` synchronizes
+the captured stream before timestamping. This preserves deterministic semantics
+for supported code. Lower-overhead event recording can be optimized later without
+changing the public API.
+
+Local verification in the current tool session:
+
+* focused Stage 1/2/4/10/11/12 tests: 19 passed, 4 skipped because no Metal
+  device was exposed to that session;
+* runtime Objective-C++ syntax check passed;
+* CUDA checker case 23 passed without requiring Metal initialization.

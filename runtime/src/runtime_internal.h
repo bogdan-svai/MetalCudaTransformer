@@ -6,6 +6,7 @@
 #include "cublas_v2.h"
 #include "cuda_to_metal.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,6 +15,15 @@
 
 struct mcuStream {
     std::uint64_t identifier;
+};
+
+struct mcuEvent {
+    std::uint64_t identifier;
+    unsigned int flags;
+    bool alive;
+    bool recorded;
+    bool synchronized;
+    std::chrono::steady_clock::time_point timestamp;
 };
 
 struct mcuCublasContext {

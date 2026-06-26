@@ -14,6 +14,11 @@ HOST_DEVICE_MARKER = "MCU_HOST_DEVICE_QUALIFIER"
 
 
 def transform_host_source(text):
+    had_cuda_runtime_include = bool(re.search(
+        r'^\s*#\s*include\s*[<"](?:cuda_runtime\.h|cuda\.h)[>"]\s*$',
+        text,
+        flags=re.MULTILINE,
+    ))
     transformed = re.sub(
         r"(?:__host__\s+__device__|__device__\s+__host__)",
         HOST_DEVICE_MARKER,
@@ -29,8 +34,8 @@ def transform_host_source(text):
         transformed,
         flags=re.MULTILINE,
     )
-    if "cudaLaunch(" in transformed or "cudaLaunchShared(" in transformed or re.search(
-        r"\bcuda(?:Malloc|Free|Memcpy|MemcpyAsync|Memset|DeviceSynchronize|GetLastError|StreamCreate|StreamDestroy|StreamSynchronize)\b", transformed
+    if had_cuda_runtime_include or "cudaLaunch(" in transformed or "cudaLaunchShared(" in transformed or re.search(
+        r"\bcuda(?:Malloc|Free|Memcpy|MemcpyAsync|Memset|DeviceSynchronize|GetLastError|PeekAtLastError|StreamCreate|StreamDestroy|StreamSynchronize|GetDeviceCount|GetDevice|SetDevice|GetDeviceProperties|DeviceReset|EventCreate|EventCreateWithFlags|EventRecord|EventSynchronize|EventElapsedTime|EventDestroy|OccupancyMaxPotentialBlockSize)\b", transformed
     ):
         transformed = '#include "cuda_to_metal.h"\n' + transformed.lstrip()
     return transformed
