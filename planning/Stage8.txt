@@ -504,8 +504,8 @@ minimum nonces through the unmodified CUDA source. Its generated output remains
 outside this repository and is not a CI dependency.
 
 Known compatibility boundaries intentionally remain for later stages:
-* warp/simdgroup intrinsics and CUDA Graphs are Stage 13 correctness work;
+* warp/simdgroup intrinsics and CUDA Graphs are Stage 14 correctness work;
 * streams/events and asynchronous overlap remain Stage 10;
 * broad library adapters remain Stage 11;
 * performance tuning, autotuning, pipeline prewarming, and graph-based launch
-  amortization are Stage 14 and must not be mixed into Stage 8 correctness.
+  amortization are Stage 15 and must not be mixed into Stage 8 correctness.

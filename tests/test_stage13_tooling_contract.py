@@ -31,7 +31,7 @@ def test_capabilities_json_contract_is_stable():
     assert result.stdout.count("\n") == 1
     assert payload["schema_version"] == 1
     assert payload["contract"] == "mcu.tooling.v1"
-    assert payload["mcu_version"] == "0.13.0"
+    assert payload["mcu_version"] == "0.14.0"
     assert payload["command"] == "capabilities"
     assert payload["exit_status"] == {"class": "success", "code": 0}
     assert payload["target"]["backend"] == "metal"
@@ -47,7 +47,7 @@ def test_capabilities_report_runtime_intrinsics_flags_and_libraries():
     assert runtime["cudaOccupancyMaxPotentialBlockSize"]["signatures"]
 
     syntax = {item["name"]: item for item in payload["syntax"]}
-    assert syntax["cuda_graphs"]["status"] == "planned"
+    assert syntax["cuda_graphs"]["status"] == "partial"
     assert syntax["warp_intrinsics"]["stage"] == "14"
 
     intrinsics = {item["name"]: item for item in payload["intrinsics"]}
@@ -102,5 +102,5 @@ def test_existing_check_json_receives_stage13_envelope(tmp_path):
     assert result.returncode == 0
     assert payload["schema_version"] == 1
     assert payload["contract"] == "mcu.tooling.v1"
-    assert payload["mcu_version"] == "0.13.0"
+    assert payload["mcu_version"] == "0.14.0"
     assert payload["exit_status"]["class"] == "success"

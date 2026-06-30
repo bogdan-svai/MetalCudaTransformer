@@ -373,14 +373,24 @@
 # -----------------------------------------------------------------------------
 
 ## 14.1 Functional Requirements
+* REQ-14.1.0: Capability and Diagnostic Baseline
+  Extend Stage 13 capability reporting and diagnostics so warp and graph features
+  are visible as supported, partial, planned, or unsupported before widening the
+  accepted CUDA subset.
 * REQ-14.1.1: Logical CUDA Warp Model
   Supported warp intrinsics must preserve CUDA's logical 32-lane masks, active-lane behavior, convergence, and return values. Direct Metal simdgroup mapping is allowed only for validated equivalent target widths.
 * REQ-14.1.2: Typed Warp Intrinsics
-  Shuffle, ballot, any/all, lane-mask, and sync operations must be selected by signature, mask semantics, and target capability. Unsupported divergent cases must fail explicitly.
+  `__syncwarp`, `__activemask`, shuffle, ballot, any/all, lane-mask, and sync operations must be selected by signature, mask semantics, type, width, convergence, and target capability. Unsupported divergent cases must fail explicitly.
 * REQ-14.1.3: CUDA Graph DAG
-  Supported kernel, copy, and memset graph nodes must preserve dependency ordering, parameter ownership, stream association, resource lifetime, and deterministic replay.
+  Supported kernel, copy, memset, and dependency graph nodes must preserve DAG ordering, parameter ownership, stream association, resource lifetime, and deterministic replay.
 * REQ-14.1.4: Graph Lifecycle
-  Graph creation/capture, instantiation, repeated launch, supported update, and destruction must expose CUDA-compatible status and failure behavior for the documented subset.
+  Graph creation, explicit node construction, stream capture, instantiation,
+  repeated launch, and destruction must expose CUDA-compatible status and
+  failure behavior for the documented subset. Graph update APIs remain deferred
+  unless a narrow same-kernel update subset is implemented and tested.
+* REQ-14.1.5: Correctness Before Optimization
+  Stage 14 records graph/warp performance metrics but must not depend on
+  performance-only rewrites. Global optimization remains Stage 15.
 
 
 # -----------------------------------------------------------------------------

@@ -9,6 +9,20 @@ from core.registry.library_adapters import default_library_registry
 APPLE_THREADGROUP_LIMIT = 1024
 LIBRARY_REGISTRY = default_library_registry()
 UNSUPPORTED_CUDA_LIBRARIES = {"cublas.h", *LIBRARY_REGISTRY.unsupported_libraries()}
+SUPPORTED_WARP_INTRINSICS = {
+    "__syncwarp",
+    "__activemask",
+    "__shfl_sync",
+    "__shfl_down_sync",
+    "__any_sync",
+    "__all_sync",
+}
+UNSUPPORTED_WARP_INTRINSICS = {
+    "__shfl_up_sync",
+    "__shfl_xor_sync",
+    "__ballot_sync",
+}
+WARP_INTRINSICS = SUPPORTED_WARP_INTRINSICS | UNSUPPORTED_WARP_INTRINSICS
 
 
 def parse_dimension(expr):
@@ -211,5 +225,94 @@ def validate(metadata):
                 file=function["file"],
                 line=function["line"],
             ))
+        diagnostics.extend(_warp_diagnostics(function))
 
     return [diagnostic.to_dict() for diagnostic in diagnostics]
+
+
+def _warp_diagnostics(function):
+    diagnostics = []
+    body = function.get("body", "")
+    for intrinsic in sorted(UNSUPPORTED_WARP_INTRINSICS):
+        pattern = re.compile(rf"\b{re.escape(intrinsic)}\s*\(")
+        for _match in pattern.finditer(body):
+            diagnostics.append(Diagnostic(
+                code="UnsupportedWarpIntrinsic",
+                severity="error",
+                message=(
+                    f"CUDA warp intrinsic '{intrinsic}' is not implemented in this Stage 14 build."
+                ),
+                file=function.get("file"),
+                line=function.get("body_line") or function.get("line"),
+            ))
+    for name, arguments in _warp_calls(body):
+        if name not in SUPPORTED_WARP_INTRINSICS:
+            continue
+        if name == "__activemask":
+            if arguments:
+                diagnostics.append(_warp_signature_diagnostic(function, name))
+            continue
+        if name == "__syncwarp":
+            if len(arguments) > 1:
+                diagnostics.append(_warp_signature_diagnostic(function, name))
+            elif arguments and not _is_full_warp_mask(arguments[0]):
+                diagnostics.append(_warp_mask_diagnostic(function, name, arguments[0]))
+            continue
+        if name in {"__shfl_sync", "__shfl_down_sync"}:
+            if len(arguments) not in {3, 4}:
+                diagnostics.append(_warp_signature_diagnostic(function, name))
+                continue
+            if not _is_full_warp_mask(arguments[0]):
+                diagnostics.append(_warp_mask_diagnostic(function, name, arguments[0]))
+            if len(arguments) == 4 and normalize_expr(arguments[3]) != "32":
+                diagnostics.append(Diagnostic(
+                    code="UnsupportedWarpWidth",
+                    severity="error",
+                    message=f"CUDA warp intrinsic '{name}' currently supports width 32 only.",
+                    file=function.get("file"),
+                    line=function.get("body_line") or function.get("line"),
+                ))
+            continue
+        if name in {"__any_sync", "__all_sync"}:
+            if len(arguments) != 2:
+                diagnostics.append(_warp_signature_diagnostic(function, name))
+                continue
+            if not _is_full_warp_mask(arguments[0]):
+                diagnostics.append(_warp_mask_diagnostic(function, name, arguments[0]))
+    return diagnostics
+
+
+def _warp_calls(body):
+    pattern = re.compile(r"\b(__syncwarp|__activemask|__shfl_sync|__shfl_down_sync|__shfl_up_sync|__shfl_xor_sync|__ballot_sync|__any_sync|__all_sync)\s*\(")
+    for match in pattern.finditer(body):
+        opening = match.end() - 1
+        closing = _find_matching_delimiter(body, opening, "(", ")")
+        if closing is None:
+            continue
+        arguments = [item.strip() for item in split_top_level(body[opening + 1:closing]) if item.strip()]
+        yield match.group(1), arguments
+
+
+def _is_full_warp_mask(expression):
+    normalized = normalize_expr(expression).lower().replace("ul", "u")
+    return normalized in {"0xffffffff", "0xffffffffu", "__activemask()"}
+
+
+def _warp_signature_diagnostic(function, name):
+    return Diagnostic(
+        code="UnsupportedWarpIntrinsic",
+        severity="error",
+        message=f"CUDA warp intrinsic '{name}' was called with an unsupported signature.",
+        file=function.get("file"),
+        line=function.get("body_line") or function.get("line"),
+    )
+
+
+def _warp_mask_diagnostic(function, name, mask):
+    return Diagnostic(
+        code="UnsupportedWarpMask",
+        severity="error",
+        message=f"CUDA warp intrinsic '{name}' currently supports full mask 0xffffffff only, not '{mask}'.",
+        file=function.get("file"),
+        line=function.get("body_line") or function.get("line"),
+    )

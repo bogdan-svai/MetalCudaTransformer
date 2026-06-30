@@ -143,7 +143,7 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   /usr/bin/time -p python scripts/verify_stage11.py
 
   echo
-  echo "== CUDA easy-to-stress checker (23 cases) =="
+  echo "== CUDA easy-to-stress checker (26 cases) =="
   /usr/bin/time -p python scripts/cuda_checker.py --tier all \
     --output /tmp/mcu_cuda_checker.json
 fi

@@ -13,6 +13,7 @@ GEOMETRY_ARGUMENTS = [
     "uint3 threads_per_threadgroup [[threads_per_threadgroup]]",
     "uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]]",
     "uint3 threadgroups_per_grid [[threadgroups_per_grid]]",
+    "uint thread_index_in_simdgroup [[thread_index_in_simdgroup]]",
 ]
 
 CUDA_TO_MSL_REPLACEMENTS = default_registry().token_replacements()

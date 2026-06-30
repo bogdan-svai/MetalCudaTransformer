@@ -1,0 +1,9 @@
+{
+  "id": "26",
+  "name": "full-mask warp intrinsics",
+  "tier": "hard",
+  "program": "tests/cuda_suite/programs/warp_intrinsics.cu",
+  "args": [],
+  "expected": "status=pass",
+  "timeout_seconds": 30
+}

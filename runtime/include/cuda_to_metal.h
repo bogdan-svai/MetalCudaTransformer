@@ -34,10 +34,69 @@ enum cudaMemcpyKind {
     cudaMemcpyDefault = 4,
 };
 
+enum cudaStreamCaptureMode {
+    cudaStreamCaptureModeGlobal = 0,
+    cudaStreamCaptureModeThreadLocal = 1,
+    cudaStreamCaptureModeRelaxed = 2,
+};
+
+struct cudaPos {
+    std::size_t x;
+    std::size_t y;
+    std::size_t z;
+};
+
+struct cudaExtent {
+    std::size_t width;
+    std::size_t height;
+    std::size_t depth;
+};
+
+struct cudaPitchedPtr {
+    void* ptr;
+    std::size_t pitch;
+    std::size_t xsize;
+    std::size_t ysize;
+};
+
+inline cudaPos make_cudaPos(std::size_t x, std::size_t y, std::size_t z) {
+    return {x, y, z};
+}
+
+inline cudaExtent make_cudaExtent(std::size_t width, std::size_t height, std::size_t depth) {
+    return {width, height, depth};
+}
+
+inline cudaPitchedPtr make_cudaPitchedPtr(void* ptr, std::size_t pitch, std::size_t xsize, std::size_t ysize) {
+    return {ptr, pitch, xsize, ysize};
+}
+
+struct cudaMemcpy3DParms {
+    cudaPitchedPtr srcPtr{};
+    cudaPitchedPtr dstPtr{};
+    cudaExtent extent{};
+    cudaMemcpyKind kind = cudaMemcpyDefault;
+};
+
+struct cudaMemsetParams {
+    void* dst;
+    std::size_t pitch;
+    unsigned int value;
+    unsigned int elementSize;
+    std::size_t width;
+    std::size_t height;
+};
+
 struct mcuStream;
 using cudaStream_t = mcuStream*;
 struct mcuEvent;
 using cudaEvent_t = mcuEvent*;
+struct mcuGraph;
+using cudaGraph_t = mcuGraph*;
+struct mcuGraphExec;
+using cudaGraphExec_t = mcuGraphExec*;
+struct mcuGraphNode;
+using cudaGraphNode_t = mcuGraphNode*;
 
 enum cudaEventFlags {
     cudaEventDefault = 0,
@@ -81,6 +140,15 @@ struct cudaDeviceProp {
     int asyncEngineCount;
 };
 
+struct cudaKernelNodeParams {
+    void* func;
+    dim3 gridDim;
+    dim3 blockDim;
+    unsigned int sharedMemBytes;
+    void** kernelParams;
+    void** extra;
+};
+
 cudaError_t cudaMalloc(void** device_ptr, std::size_t size);
 cudaError_t cudaFree(void* device_ptr);
 cudaError_t cudaMemcpy(void* dst, const void* src, std::size_t count, cudaMemcpyKind kind);
@@ -92,6 +160,7 @@ cudaError_t cudaMemcpyAsync(
     cudaStream_t stream = nullptr
 );
 cudaError_t cudaMemset(void* dst, int value, std::size_t count);
+cudaError_t cudaMemsetAsync(void* dst, int value, std::size_t count, cudaStream_t stream = nullptr);
 cudaError_t cudaDeviceSynchronize();
 cudaError_t cudaStreamCreate(cudaStream_t* stream);
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
@@ -110,7 +179,50 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = nullptr);
 cudaError_t cudaEventSynchronize(cudaEvent_t event);
 cudaError_t cudaEventElapsedTime(float* milliseconds, cudaEvent_t start, cudaEvent_t end);
 cudaError_t cudaEventDestroy(cudaEvent_t event);
+cudaError_t cudaGraphCreate(cudaGraph_t* graph, unsigned int flags);
+cudaError_t cudaGraphDestroy(cudaGraph_t graph);
+cudaError_t cudaGraphInstantiate(
+    cudaGraphExec_t* graph_exec,
+    cudaGraph_t graph,
+    cudaGraphNode_t* error_node,
+    char* log_buffer,
+    std::size_t buffer_size
+);
+cudaError_t cudaGraphExecDestroy(cudaGraphExec_t graph_exec);
+cudaError_t cudaGraphLaunch(cudaGraphExec_t graph_exec, cudaStream_t stream);
+cudaError_t cudaGraphAddKernelNode(
+    cudaGraphNode_t* node,
+    cudaGraph_t graph,
+    const cudaGraphNode_t* dependencies,
+    std::size_t dependency_count,
+    const cudaKernelNodeParams* parameters
+);
+cudaError_t cudaGraphAddDependencies(
+    cudaGraph_t graph,
+    const cudaGraphNode_t* from,
+    const cudaGraphNode_t* to,
+    std::size_t dependency_count
+);
+cudaError_t cudaGraphGetNodes(cudaGraph_t graph, cudaGraphNode_t* nodes, std::size_t* count);
+cudaError_t cudaGraphGetRootNodes(cudaGraph_t graph, cudaGraphNode_t* nodes, std::size_t* count);
+cudaError_t cudaGraphAddMemcpyNode(
+    cudaGraphNode_t* node,
+    cudaGraph_t graph,
+    const cudaGraphNode_t* dependencies,
+    std::size_t dependency_count,
+    const cudaMemcpy3DParms* parameters
+);
+cudaError_t cudaGraphAddMemsetNode(
+    cudaGraphNode_t* node,
+    cudaGraph_t graph,
+    const cudaGraphNode_t* dependencies,
+    std::size_t dependency_count,
+    const cudaMemsetParams* parameters
+);
+cudaError_t cudaStreamBeginCapture(cudaStream_t stream, unsigned int mode);
+cudaError_t cudaStreamEndCapture(cudaStream_t stream, cudaGraph_t* graph);
 cudaError_t mcuSetArtifactDirectory(const char* path);
+void* mcuKernel(const char* kernel_name);
 
 template <typename T>
 cudaError_t cudaMalloc(T** device_ptr, std::size_t size) {

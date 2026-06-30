@@ -149,7 +149,7 @@ Every public JSON response must include:
 {
   "schema_version": 1,
   "contract": "mcu.tooling.v1",
-  "mcu_version": "0.13.0",
+  "mcu_version": "0.14.0",
   "ok": true,
   "command": "capabilities",
   "diagnostics": [],

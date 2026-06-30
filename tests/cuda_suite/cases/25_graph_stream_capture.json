@@ -1,0 +1,9 @@
+{
+  "id": "25",
+  "name": "stream capture graph replay",
+  "tier": "hard",
+  "program": "tests/cuda_suite/programs/graph_capture.cu",
+  "args": [],
+  "expected": "status=pass",
+  "timeout_seconds": 30
+}

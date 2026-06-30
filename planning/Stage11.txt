@@ -161,6 +161,6 @@ special-cased for coursework inputs or any repository-owned fixture.
 ## 7. NON-GOALS
 * Full cuBLAS coverage.
 * cuRAND, cuFFT, or Thrust implementation in the first adapter vertical.
-* Warp intrinsics or CUDA Graphs; these remain Stage 13.
+* Warp intrinsics or CUDA Graphs; these remain Stage 14.
 * Broad performance tuning beyond adapter-local caching and measurement; global
-  optimization remains Stage 14.
+  optimization remains Stage 15.

@@ -28,6 +28,7 @@ def transform_host_source(text):
     transformed = _remove_qualified_code(transformed, DEVICE_SIGNATURE)
     transformed = transformed.replace(HOST_DEVICE_MARKER, "")
     transformed = rewrite_triple_chevrons(transformed)
+    transformed = rewrite_graph_kernel_references(transformed)
     transformed = re.sub(
         r'^\s*#\s*include\s*[<"](?:cuda_runtime\.h|cuda\.h)[>"]\s*$',
         "",
@@ -35,7 +36,7 @@ def transform_host_source(text):
         flags=re.MULTILINE,
     )
     if had_cuda_runtime_include or "cudaLaunch(" in transformed or "cudaLaunchShared(" in transformed or re.search(
-        r"\bcuda(?:Malloc|Free|Memcpy|MemcpyAsync|Memset|DeviceSynchronize|GetLastError|PeekAtLastError|StreamCreate|StreamDestroy|StreamSynchronize|GetDeviceCount|GetDevice|SetDevice|GetDeviceProperties|DeviceReset|EventCreate|EventCreateWithFlags|EventRecord|EventSynchronize|EventElapsedTime|EventDestroy|OccupancyMaxPotentialBlockSize)\b", transformed
+        r"\bcuda(?:Malloc|Free|Memcpy|MemcpyAsync|Memset|MemsetAsync|DeviceSynchronize|GetLastError|PeekAtLastError|StreamCreate|StreamDestroy|StreamSynchronize|GetDeviceCount|GetDevice|SetDevice|GetDeviceProperties|DeviceReset|EventCreate|EventCreateWithFlags|EventRecord|EventSynchronize|EventElapsedTime|EventDestroy|OccupancyMaxPotentialBlockSize|Graph|StreamBeginCapture|StreamEndCapture)\b", transformed
     ):
         transformed = '#include "cuda_to_metal.h"\n' + transformed.lstrip()
     return transformed
@@ -66,6 +67,20 @@ def rewrite_triple_chevrons(text):
         )
 
     return TRIPLE_CHEVRON.sub(replace, text)
+
+
+def rewrite_graph_kernel_references(text):
+    text = re.sub(
+        r"\(\s*void\s*\*\s*\)\s*([A-Za-z_]\w*)",
+        lambda match: f'mcuKernel("{match.group(1)}")',
+        text,
+    )
+    text = re.sub(
+        r"reinterpret_cast\s*<\s*void\s*\*\s*>\s*\(\s*([A-Za-z_]\w*)\s*\)",
+        lambda match: f'mcuKernel("{match.group(1)}")',
+        text,
+    )
+    return text
 
 
 def has_host_code(text):

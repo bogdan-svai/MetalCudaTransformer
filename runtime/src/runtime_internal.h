@@ -9,9 +9,17 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
+
+enum class mcuGraphNodeKind {
+    Kernel,
+    Copy,
+    Memset,
+};
 
 struct mcuStream {
     std::uint64_t identifier;
@@ -24,6 +32,38 @@ struct mcuEvent {
     bool recorded;
     bool synchronized;
     std::chrono::steady_clock::time_point timestamp;
+};
+
+struct mcuGraphNode {
+    std::uint64_t identifier;
+    bool alive;
+    mcuGraphNodeKind kind;
+    std::string kernel_name;
+    dim3 grid;
+    dim3 block;
+    unsigned int shared_bytes;
+    std::vector<std::vector<std::byte>> scalar_storage;
+    std::vector<mcu::KernelArgument> arguments;
+    void* copy_dst;
+    const void* copy_src;
+    std::size_t copy_count;
+    cudaMemcpyKind copy_kind;
+    void* memset_dst;
+    int memset_value;
+    std::size_t memset_count;
+    std::vector<mcuGraphNode*> dependencies;
+};
+
+struct mcuGraph {
+    std::uint64_t identifier;
+    bool alive;
+    std::vector<std::unique_ptr<mcuGraphNode>> nodes;
+};
+
+struct mcuGraphExec {
+    std::uint64_t identifier;
+    bool alive;
+    std::vector<mcuGraphNode*> ordered_nodes;
 };
 
 struct mcuCublasContext {

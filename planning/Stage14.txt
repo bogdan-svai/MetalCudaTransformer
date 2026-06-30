@@ -1,43 +1,430 @@
 # SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
-# SYSTEM LAYER: STAGE 14 - WARP/SIMDGROUP SEMANTICS & CUDA GRAPHS
+# SYSTEM LAYER: STAGE 14 - WARP/SIMDGROUP SEMANTICS AND CUDA GRAPHS
 # -----------------------------------------------------------------------------
 
-## 1. OBJECTIVE
-Stage 14 adds execution-model features that must exist before final optimization:
-CUDA warp collectives and reusable CUDA Graph scheduling. These are compatibility
-features, not benchmark-only rewrites.
+## 1. Objective
+Stage 14 adds two CUDA execution-model features that must be correct before MCU
+enters final performance engineering:
 
-## 2. WARP/SIMDGROUP MODEL
-* Represent active lanes, logical CUDA warp IDs, lane IDs, masks, and convergence
-  explicitly in IR.
-* Query and record Metal `threadExecutionWidth`; never assume Apple SIMD width is
-  CUDA-compatible without a validated target capability.
-* Support a typed initial subset of shuffle, ballot, any/all, lane-mask, and
-  `__syncwarp` behavior.
-* Preserve CUDA's 32-lane logical warp contract through direct simdgroup mapping
-  only on equivalent targets; otherwise reject or use a tested emulation.
-* Reject divergent/partial-mask cases whose CUDA semantics cannot be preserved.
+* a documented, tested subset of CUDA warp-level intrinsics;
+* a documented, tested subset of CUDA Graph construction/capture/replay.
 
-## 3. CUDA GRAPH MODEL
-* Build typed graph nodes for kernels, copies, memset, dependencies, and supported
-  host boundaries.
-* Implement graph creation, capture, instantiation, launch, update subset, and
-  destruction over the Stage 10 stream scheduler.
-* Validate DAG acyclicity, resource lifetime, parameter ownership, and replay
-  ordering before native command encoding.
-* Replays must avoid repeated translation and redundant scheduler construction.
+This is a correctness and compatibility stage, not an optimization stage. Stage
+15 may optimize graph replay, command batching, pipeline prewarming, and
+autotuning only after Stage 14 proves the semantics.
 
-## 4. TESTS
-* Warp collectives match CPU lane-level oracles for full and supported partial
-  masks, divergent branches, and boundary lanes.
-* Unsupported target widths and masks fail with source-mapped diagnostics.
-* Graph DAG ordering, fan-in/fan-out, repeated launch, update, and destruction are
-  deterministic and leak-free.
-* Graph and non-graph execution produce identical numerical/byte results.
-* Stage 1-13 behavior and metrics remain regression-gated.
+## 2. Why This Stage Exists
+CUDA code that is more advanced than simple kernels often relies on either:
 
-## 5. EXIT CRITERIA
-* Supported warp code has an explicit CUDA-to-Metal semantic proof and tests.
-* Supported CUDA Graphs replay through the scheduler without source changes.
-* Capability reporting distinguishes native, emulated, and unsupported behavior.
-* Performance is measured but not yet used to weaken correctness contracts.
+* warp-level communication inside a block, or
+* repeated DAG-style execution through CUDA Graphs.
+
+MCU currently reports these as planned in Stage 13 capability data. That is the
+right behavior for now: accepting such code without correct semantics would be
+worse than rejecting it.
+
+Stage 14 changes that contract for a narrow, tested subset. Anything outside the
+subset must still fail explicitly with source-mapped diagnostics.
+
+## 3. Scope
+
+### 3.1 In Scope
+Stage 14 must implement:
+
+* target capability detection for warp/SIMDGroup support;
+* capability reporting that distinguishes native, emulated, planned, and
+  unsupported warp/graph behavior;
+* typed recognition of supported warp intrinsics;
+* source-mapped diagnostics for unsupported warp masks/divergence/signatures;
+* a minimal CUDA Graph runtime API subset;
+* graph DAG validation and deterministic replay over the Stage 10 scheduler;
+* tests that compare graph and non-graph execution;
+* tests that compare warp results against CPU lane-level oracles.
+
+### 3.2 Out of Scope
+Stage 14 must not implement:
+
+* full CUDA warp semantics;
+* cooperative groups;
+* dynamic parallelism;
+* texture/surface memory;
+* full graph update semantics;
+* stream callbacks and host function graph nodes beyond explicitly supported
+  no-op/source-compatible behavior;
+* global performance autotuning;
+* assignment-specific shortcuts.
+
+## 4. Stage Split
+
+### 4.1 Stage 14A - Capability and Diagnostics Baseline
+Before accepting any new source code, MCU must expose a truthful target/runtime
+surface:
+
+* `mcu capabilities --json` reports warp and graph entries with detailed
+  statuses;
+* unsupported warp intrinsics produce stable diagnostics instead of leaking Metal
+  compiler errors;
+* unsupported graph APIs produce stable runtime errors or compile diagnostics;
+* tests pin the unsupported behavior before implementation is widened.
+
+Expected new diagnostic codes:
+
+* `UnsupportedWarpIntrinsic`
+* `UnsupportedWarpMask`
+* `UnsupportedWarpDivergence`
+* `UnsupportedWarpType`
+* `UnsupportedGraphApi`
+* `InvalidGraphNode`
+* `InvalidGraphDependency`
+* `InvalidGraphCapture`
+
+### 4.2 Stage 14B - Warp Intrinsic Subset
+Implement the smallest useful and defensible warp subset.
+
+Supported initially:
+
+* `__syncwarp(mask)` for full warp masks and documented supported masks;
+* `__activemask()` when the active-lane model is statically valid;
+* `__lane_id` equivalent lowering internally where required by supported
+  intrinsics;
+* `__shfl_sync(mask, value, srcLane, width)` for integer and float scalar values;
+* `__shfl_down_sync(mask, value, delta, width)` for integer and float scalar
+  values;
+* `__ballot_sync(mask, predicate)`;
+* `__any_sync(mask, predicate)`;
+* `__all_sync(mask, predicate)`.
+
+Minimum supported types:
+
+* `int`
+* `unsigned int`
+* `float`
+
+Rejected initially:
+
+* 64-bit shuffle values unless explicitly implemented and tested;
+* structs/vectors through warp intrinsics;
+* divergent calls whose active mask cannot be proven safe;
+* masks that MCU cannot preserve on the current target;
+* widths other than documented powers of two.
+
+Implementation policy:
+
+* CUDA's logical warp width remains 32.
+* Metal `threadExecutionWidth` must be queried/recorded; the compiler/runtime
+  must not silently assume it is CUDA-compatible.
+* Direct Metal `simd_shuffle`, `simd_ballot`, or simdgroup operations are allowed
+  only when the target capability and logical CUDA semantics match the test
+  model.
+* If native mapping is not safe, either use a tested emulation path or reject the
+  source with a diagnostic.
+
+### 4.3 Stage 14C - CUDA Graph Runtime Subset
+Implement a graph subset over existing runtime operations and Stage 10 streams.
+
+Required types:
+
+* `cudaGraph_t`
+* `cudaGraphExec_t`
+* `cudaGraphNode_t`
+* `cudaKernelNodeParams`
+* `cudaMemcpy3DParms` only if needed for source compatibility; otherwise keep
+  one-dimensional copy nodes explicit and documented.
+
+Required APIs:
+
+* `cudaGraphCreate`
+* `cudaGraphDestroy`
+* `cudaGraphInstantiate`
+* `cudaGraphExecDestroy`
+* `cudaGraphLaunch`
+* `cudaGraphAddKernelNode`
+* `cudaGraphAddMemcpyNode`
+* `cudaGraphAddMemsetNode`
+* `cudaGraphAddDependencies`
+* `cudaGraphGetNodes`
+* `cudaGraphGetRootNodes`
+
+Capture subset:
+
+* `cudaStreamBeginCapture`
+* `cudaStreamEndCapture`
+
+Supported capture mode:
+
+* global/thread-local mode can be accepted only if MCU can preserve ordering;
+* unsupported modes must return `cudaErrorNotSupported`.
+
+Update subset:
+
+* `cudaGraphExecKernelNodeSetParams` may be implemented only for same-kernel,
+  same-shape parameter replacement;
+* broad `cudaGraphExecUpdate` is out of scope unless a narrow safe subset is
+  implemented and tested.
+
+### 4.4 Stage 14D - Integration and Regression Gate
+Stage 14 is complete only after:
+
+* graph replay and non-graph execution produce identical output;
+* graph launch can repeat the same DAG many times without rebuilding translation
+  artifacts;
+* warp tests cover full masks, boundary lanes, supported widths, and rejection
+  cases;
+* Stage 1-13 tests still pass;
+* capability reporting changes from `planned` to `supported` or `partial` only
+  for implemented, tested entries.
+
+## 5. Warp Semantics Contract
+
+### 5.1 Logical Model
+MCU must model:
+
+* logical CUDA warp id;
+* logical lane id in `[0, 31]`;
+* active lane mask;
+* requested operation mask;
+* supported width;
+* whether the intrinsic call is convergent.
+
+### 5.2 Mask Rules
+For the first implementation:
+
+* full mask `0xffffffff` is required;
+* constant submasks may be accepted only when tested;
+* dynamic masks are rejected unless MCU can prove or emulate correctness;
+* inactive lanes must not contribute to ballot/any/all results;
+* source lanes outside the supported width must follow CUDA-compatible behavior
+  or be rejected.
+
+### 5.3 Diagnostics
+Unsupported cases must fail before Metal compilation.
+
+Examples:
+
+* `__shfl_sync(mask, struct_value, 0)` -> `UnsupportedWarpType`;
+* dynamic mask that cannot be proven -> `UnsupportedWarpMask`;
+* intrinsic inside unsupported divergent control flow -> `UnsupportedWarpDivergence`;
+* unsupported intrinsic name/signature -> `UnsupportedWarpIntrinsic`.
+
+## 6. CUDA Graph Semantics Contract
+
+### 6.1 Graph DAG
+A graph is a typed DAG of operations:
+
+* kernel node;
+* copy node;
+* memset node;
+* dependency edge;
+* optional supported host boundary.
+
+Validation must ensure:
+
+* no cycles;
+* dependencies reference nodes from the same graph;
+* resources outlive graph instantiation and launch;
+* kernel parameters are copied/owned according to the documented subset;
+* stream association and replay ordering are deterministic.
+
+### 6.2 Capture
+Stream capture records supported operations submitted to a stream between begin
+and end capture.
+
+Accepted operations:
+
+* kernel launches;
+* supported async copies;
+* supported memset operations;
+* events only if ordering can be represented safely.
+
+Rejected operations:
+
+* unsupported graph APIs during capture;
+* nested capture unless explicitly implemented;
+* cross-stream capture dependencies that cannot be represented;
+* host callbacks/function nodes unless implemented.
+
+### 6.3 Replay
+`cudaGraphLaunch(exec, stream)` must enqueue equivalent work onto the selected
+stream. It must not re-run frontend parsing or Metal code generation. Repeated
+launches must be deterministic.
+
+Performance is measured here, but only Stage 15 may tune aggressively.
+
+## 7. Capability Reporting
+Stage 13's capability command must be updated.
+
+Warp capability entries must expose:
+
+* intrinsic name;
+* status: `supported`, `partial`, `emulated`, `planned`, or `unsupported`;
+* supported types;
+* supported masks/widths;
+* target requirement;
+* stage.
+
+Graph capability entries must expose:
+
+* API name;
+* status;
+* supported node kinds;
+* supported capture modes;
+* unsupported update/callback limits;
+* stage.
+
+Note: if `emulated` is added as a status, Stage 13 tests and documentation must
+be updated intentionally.
+
+## 8. Testing Plan
+
+### 8.1 Unit Tests
+Add focused tests for:
+
+* warp intrinsic recognition and diagnostics;
+* graph object lifecycle;
+* DAG cycle detection;
+* dependency validation;
+* capture begin/end state transitions;
+* capability report entries.
+
+### 8.2 Native Runtime Tests
+Add native tests for:
+
+* `__shfl_sync` lane-copy oracle;
+* `__shfl_down_sync` reduction oracle;
+* `__ballot_sync`, `__any_sync`, and `__all_sync` predicate oracle;
+* repeated graph launch of kernel + copy DAG;
+* graph fan-in/fan-out DAG ordering;
+* graph replay vs direct stream execution byte-for-byte equality;
+* graph destroy and invalid handle behavior.
+
+### 8.3 Checker Tests
+Extend the CUDA checker with cases:
+
+* easy warp shuffle;
+* medium warp ballot/reduction;
+* easy explicit graph;
+* medium stream capture graph;
+* hard repeated replay with multiple kernels and copies.
+
+These cases must be generic CUDA programs, not fixtures hardcoded to one project.
+
+## 9. Performance Measurements
+Stage 14 records, but does not optimize around, these metrics:
+
+* graph instantiation time;
+* graph launch enqueue time;
+* repeated graph launch median/p95;
+* direct stream equivalent median/p95;
+* warp native/emulated path used;
+* command buffers submitted;
+* scheduler work avoided by graph replay.
+
+No Stage 14 acceptance criterion may require a performance win unless the
+correctness contract is already satisfied.
+
+## 10. Acceptance Criteria
+Stage 14 is complete when:
+
+* all Stage 14 tests pass on macOS Metal;
+* full `make verify` passes;
+* supported warp intrinsics match CPU lane-level oracles;
+* unsupported warp cases fail with source-mapped diagnostics;
+* supported CUDA Graphs replay deterministically without source edits;
+* graph and non-graph execution produce identical outputs;
+* `mcu capabilities --json` truthfully reports the supported/partial/planned
+  warp and graph surface;
+* Stage 15 can start performance work without adding new semantics.
+
+## 11. Known Risks
+
+* Metal SIMDGroup width and CUDA warp width may not map one-to-one on every
+  target.
+* Dynamic masks and divergent control flow can look simple but violate CUDA
+  semantics if lowered naively.
+* Graph capture can become a hidden scheduler rewrite; keep the first subset
+  narrow.
+* Broad graph update semantics can be larger than the rest of the stage; keep
+  update support narrow or defer it.
+* If Stage 14 is too large in practice, split implementation commits by 14A,
+  14B, 14C, and 14D while preserving this single stage document.
+
+## 12. Implementation Status - 2026-06-30
+Implemented in the first Stage 14 vertical:
+
+* `mcu capabilities --json` now reports `warp_intrinsics` and `cuda_graphs`
+  sections separately from the older generic syntax/runtime lists.
+* MCU version is `0.14.0`; runtime ABI is `6`.
+* Warp intrinsics now have a native full-mask Stage 14B subset:
+  * `__syncwarp()` and `__syncwarp(0xffffffffu)` lower to Metal
+    `simdgroup_barrier`;
+  * `__activemask()` returns the supported full-warp mask;
+  * `__shfl_sync(0xffffffffu, value, srcLane[, 32])` lowers to
+    `simd_shuffle`;
+  * `__shfl_down_sync(0xffffffffu, value, delta[, 32])` lowers to
+    `simd_shuffle_down`;
+  * `__any_sync(0xffffffffu, predicate)` lowers to `simd_any`;
+  * `__all_sync(0xffffffffu, predicate)` lowers to `simd_all`.
+* Unsupported warp behavior still fails before Metal compilation:
+  * `__ballot_sync`;
+  * `__shfl_up_sync`;
+  * `__shfl_xor_sync`;
+  * dynamic masks;
+  * widths other than 32.
+* Host transpilation rewrites standard graph kernel references such as
+  `params.func = (void*)my_kernel;` into an MCU kernel descriptor without user
+  source edits.
+* Runtime graph support includes:
+  * `cudaGraphCreate`;
+  * `cudaGraphDestroy`;
+  * `cudaGraphAddKernelNode`;
+  * `cudaGraphAddDependencies`;
+  * `cudaGraphGetNodes`;
+  * `cudaGraphGetRootNodes`;
+  * `cudaGraphInstantiate`;
+  * `cudaGraphLaunch`;
+  * `cudaGraphExecDestroy`.
+* Supported graph nodes now include:
+  * kernel nodes through `cudaGraphAddKernelNode`;
+  * one-dimensional byte copy nodes through `cudaGraphAddMemcpyNode`;
+  * one-dimensional byte memset nodes through `cudaGraphAddMemsetNode`.
+* Explicit graphs replay deterministically through the existing Stage 10 stream
+  scheduler.
+* Single-stream capture is implemented for:
+  * MCU kernel launches;
+  * `cudaMemcpyAsync`;
+  * `cudaMemsetAsync`.
+* Unsupported graph behavior returns stable errors instead of silent acceptance:
+  * nested capture;
+  * cross-stream capture dependencies;
+  * 2D/3D memcpy graph nodes;
+  * multi-row memset graph nodes;
+  * host callback nodes;
+  * broad graph update.
+* CUDA checker now has 26 cases:
+  * case 24 covers explicit graph kernel replay;
+  * case 25 covers stream-captured copy/kernel/copy replay;
+  * case 26 covers full-mask warp shuffle/vote intrinsics.
+
+Verification performed:
+
+* focused Stage 14 Graph native test: passed;
+* focused contract/compiler tests: 8 passed, 2 skipped;
+* Objective-C++ runtime syntax check: passed;
+* focused Stage 14 Graph memory/capture native test: passed;
+* CUDA checker case 25 stream capture: passed in 0.358s during focused run;
+* focused Stage 14 warp native test: passed;
+* CUDA checker case 26 full-mask warp intrinsics: passed in 0.388s during
+  focused run;
+* full `make verify`: passed;
+* full pytest inside verify: 94 passed;
+* full CUDA checker: 26/26 passed, with case 26 at 0.254s during verify.
+
+Remaining Stage 14 work:
+
+* implement `__ballot_sync` once Metal `simd_vote` can be converted to a
+  CUDA-compatible 32-bit mask or emulated safely;
+* implement dynamic/sub-warp masks and widths only with source diagnostics and
+  oracle tests;
+* implement narrow graph update support only if it can be tested safely;
+* update capabilities from `planned` to `partial/supported` only as each subset
+  becomes real.

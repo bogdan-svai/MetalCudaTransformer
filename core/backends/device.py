@@ -83,6 +83,9 @@ def rewrite_device_calls(body, function, spaces, plan):
         if rule.get("lowering_handler") == "lower_typed_atomic":
             rewritten = _rewrite_atomic_calls(rewritten, name, rule["target_symbol"])
             continue
+        if rule.get("lowering_handler") == "lower_warp_intrinsic":
+            rewritten = _rewrite_warp_intrinsic_calls(rewritten, name, rule["target_symbol"])
+            continue
         target = rule.get("target_symbol")
         if target:
             if rule.get("lowering_handler") == "lower_threadgroup_barrier":
@@ -97,6 +100,35 @@ def rewrite_device_calls(body, function, spaces, plan):
         rewritten,
         plan.atomic_parameters.get(function.symbol_id, {}),
     )
+
+
+def _rewrite_warp_intrinsic_calls(body, name, target):
+    pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
+    replacements = []
+    for match in pattern.finditer(body):
+        opening = match.end() - 1
+        closing = find_matching_delimiter(body, opening, "(", ")")
+        if closing is None:
+            continue
+        arguments = [item.strip() for item in split_top_level(body[opening + 1:closing]) if item.strip()]
+        replacement = None
+        if name == "__activemask" and not arguments:
+            replacement = target
+        elif name == "__syncwarp" and len(arguments) <= 1:
+            replacement = target
+        elif name in {"__shfl_sync", "__shfl_down_sync"} and len(arguments) in {3, 4}:
+            width = arguments[3] if len(arguments) == 4 else "32"
+            replacement = (
+                f"{target}({arguments[0]}, {arguments[1]}, {arguments[2]}, "
+                f"{width}, thread_index_in_simdgroup)"
+            )
+        elif name in {"__any_sync", "__all_sync"} and len(arguments) == 2:
+            replacement = f"{target}({arguments[0]}, {arguments[1]})"
+        if replacement:
+            replacements.append((match.start(), closing + 1, replacement))
+    for start, end, replacement in reversed(replacements):
+        body = body[:start] + replacement + body[end:]
+    return body
 
 
 def _rewrite_atomic_calls(body, name, target):
@@ -303,6 +335,32 @@ def _render_macros(project):
 
 def _render_intrinsic_prelude(plan):
     lines = []
+    if any(
+        rule.get("lowering_handler") == "lower_warp_intrinsic"
+        for rule in plan.intrinsics_used.values()
+    ):
+        lines.extend([
+            "template <typename T>",
+            "inline T mcu_warp_shfl_sync(uint mask, T value, uint source_lane, uint width, uint lane) {",
+            "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle(value, source_lane) : value;",
+            "}",
+            "template <typename T>",
+            "inline T mcu_warp_shfl_down_sync(uint mask, T value, uint delta, uint width, uint lane) {",
+            "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle_down(value, delta) : value;",
+            "}",
+            "inline int mcu_warp_any_sync(uint mask, bool predicate) {",
+            "    return (mask == 0xffffffffu && simd_any(predicate)) ? 1 : 0;",
+            "}",
+            "inline int mcu_warp_all_sync(uint mask, bool predicate) {",
+            "    return (mask == 0xffffffffu && simd_all(predicate)) ? 1 : 0;",
+            "}",
+            "inline int mcu_warp_any_sync(uint mask, int predicate) {",
+            "    return mcu_warp_any_sync(mask, predicate != 0);",
+            "}",
+            "inline int mcu_warp_all_sync(uint mask, int predicate) {",
+            "    return mcu_warp_all_sync(mask, predicate != 0);",
+            "}",
+        ])
     if "memset" in plan.intrinsics_used:
         for space in ("thread", "device", "threadgroup"):
             lines.extend([
