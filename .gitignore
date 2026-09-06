@@ -4,3 +4,10 @@ __pycache__/
 .pytest_cache/
 mcu_artifacts.zip
 .mcu/
+*.mcu/
+*.air
+*.metallib
+*.pcm
+*.o
+*.a
+examples/stage9_project/app/main

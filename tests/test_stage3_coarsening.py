@@ -4,6 +4,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+from core.passes.coarsening import plan_coarsening
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MCU = ROOT / "mcu"
@@ -112,6 +114,25 @@ def test_non_divisible_manual_factor_fails(tmp_path):
 
     assert result.returncode == 1
     assert any(item["code"] == "NonDivisibleCoarseningFactor" for item in payload["diagnostics"])
+
+
+def test_non_strict_coarsening_skips_incompatible_kernel():
+    metadata = {
+        "kernels": [
+            {"name": "work", "body": ""},
+            {"name": "dummy", "body": ""},
+        ],
+        "launches": [
+            {"kernel": "work", "block": {"dims": [256, 1, 1]}, "file": "x.cu", "line": 1},
+            {"kernel": "dummy", "block": {"dims": [1, 1, 1]}, "file": "x.cu", "line": 2},
+        ],
+    }
+
+    result = plan_coarsening(metadata, requested_factor={"factor": 2, "strict": False})
+
+    assert result["diagnostics"] == []
+    assert result["plans"]["work"]["coarsening_factor"] == 2
+    assert result["plans"]["dummy"]["coarsening_factor"] == 1
 
 
 def test_invalid_factor_is_cli_error(tmp_path):

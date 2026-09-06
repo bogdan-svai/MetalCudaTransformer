@@ -6,6 +6,11 @@ THREADGROUP_LIMIT = 1024
 
 
 def plan_coarsening(metadata, requested_factor=None):
+    strict_requested = True
+    if isinstance(requested_factor, dict):
+        strict_requested = requested_factor.get("strict", True)
+        requested_factor = requested_factor.get("factor")
+
     launches_by_kernel = {}
     for launch in metadata.get("launches", []):
         launches_by_kernel.setdefault(launch["kernel"], []).append(launch)
@@ -60,6 +65,9 @@ def plan_coarsening(metadata, requested_factor=None):
 
         if requested_factor and requested_factor > 1:
             if original_block is None:
+                if not strict_requested:
+                    plans[name] = _default_plan(original_block)
+                    continue
                 diagnostics.append(_diagnostic(
                     "UnresolvedCoarseningGeometry",
                     f"Kernel '{name}' requires a static launch block for manual coarsening.",
@@ -67,6 +75,9 @@ def plan_coarsening(metadata, requested_factor=None):
                 ))
                 continue
             if original_block[0] % requested_factor != 0:
+                if not strict_requested:
+                    plans[name] = _default_plan(original_block)
+                    continue
                 diagnostics.append(_diagnostic(
                     "NonDivisibleCoarseningFactor",
                     (
@@ -131,6 +142,16 @@ def _physical_block(block, factor):
 
 def _volume(block):
     return block[0] * block[1] * block[2]
+
+
+def _default_plan(original_block):
+    return {
+        "mode": "none",
+        "axis": "x",
+        "coarsening_factor": 1,
+        "original_block": list(original_block) if original_block else None,
+        "physical_block": list(original_block) if original_block else None,
+    }
 
 
 def _diagnostic(code, message, source):

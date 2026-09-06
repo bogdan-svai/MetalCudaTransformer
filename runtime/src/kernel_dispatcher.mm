@@ -107,7 +107,12 @@ cudaError_t KernelDispatcher::dispatch(
         "command_submission",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - submission_started).count()
     );
+    recordRuntimeMetric(
+        (std::string("command_submission.kernel.") + kernel_name).c_str(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - submission_started).count()
+    );
     incrementRuntimeCounter("kernel_dispatches");
+    incrementRuntimeCounter((std::string("kernel_dispatches.") + kernel_name).c_str());
     submitted = command;
     return cudaSuccess;
 }

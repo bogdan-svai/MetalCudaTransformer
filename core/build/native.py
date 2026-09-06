@@ -1,20 +1,19 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import tempfile
-from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from pathlib import Path
 
 from core.backends.host import has_host_code, transform_host_source
 from core.cache import CacheStore, fingerprint
 from core.diagnostics.compiler import parse_compiler_diagnostics
 from core.frontend.regex_parser import read_text
 from core.version import MCU_VERSION, RUNTIME_ABI
-
 
 HOST_SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".cu"}
 HEADER_EXTENSIONS = {".h", ".hpp"}
@@ -37,7 +36,9 @@ def build_native(
     object_directory = output / "objects"
     marker = output / ".mcu-native-build"
     manifest_path = output / "build_manifest.json"
-    executable = Path(executable_path).resolve() if executable_path else output / _executable_name(metadata)
+    executable = (
+        Path(executable_path).resolve() if executable_path else output / _executable_name(metadata)
+    )
     cache = CacheStore()
     root = Path(project_root).resolve()
 
@@ -52,8 +53,14 @@ def build_native(
     native_link_flags = list(native_link_flags or [])
     compile_context = metadata.get("compile_context", {})
     build_key = _build_key(
-        source_paths, native_objects, build_output, optimization, executable, root,
-        compile_context, host_flags,
+        source_paths,
+        native_objects,
+        build_output,
+        optimization,
+        executable,
+        root,
+        compile_context,
+        host_flags,
         native_link_flags,
     )
     if _is_noop_build(manifest_path, build_key, executable, output):
@@ -77,7 +84,11 @@ def build_native(
         _write_if_changed(output / "symbol_manifest.json", build_output["symbol_manifest_text"])
 
     metal_result = _build_metallib(
-        build_output["metal_source"], output, cache, timings, compile_context,
+        build_output["metal_source"],
+        output,
+        cache,
+        timings,
+        compile_context,
     )
     if not metal_result["ok"]:
         return metal_result
@@ -156,14 +167,16 @@ def _build_metallib(metal_source, output, cache, timings, compile_context):
     metal_file = output / "generated.metal"
     air_file = output / "generated.air"
     metallib = output / "generated.metallib"
-    key = fingerprint({
-        "source": metal_source,
-        "architecture": platform.machine(),
-        "mcu_version": MCU_VERSION,
-        "metal_pipeline": 2,
-        "compile_context": compile_context,
-        "toolchain": _toolchain_identity(),
-    })
+    key = fingerprint(
+        {
+            "source": metal_source,
+            "architecture": platform.machine(),
+            "mcu_version": MCU_VERSION,
+            "metal_pipeline": 2,
+            "compile_context": compile_context,
+            "toolchain": _toolchain_identity(),
+        }
+    )
     if cache.restore("metal", key, "generated.metallib", metallib):
         if timings:
             timings.cache("metal", True, key)
@@ -171,16 +184,27 @@ def _build_metallib(metal_source, output, cache, timings, compile_context):
     if timings:
         timings.cache("metal", False, key)
     metal_command = [
-        "xcrun", "-sdk", "macosx", "metal", "-c",
+        "xcrun",
+        "-sdk",
+        "macosx",
+        "metal",
+        "-c",
         *[f"-D{value}" for value in compile_context.get("definitions", [])],
         *[f"-U{value}" for value in compile_context.get("undefinitions", [])],
         *[item for path in compile_context.get("include_paths", []) for item in ("-I", path)],
         f"-fmodules-cache-path={output / 'module-cache'}",
-        str(metal_file), "-o", str(air_file),
+        str(metal_file),
+        "-o",
+        str(air_file),
     ]
     metallib_command = [
-        "xcrun", "-sdk", "macosx", "metal",
-        str(air_file), "-o", str(metallib),
+        "xcrun",
+        "-sdk",
+        "macosx",
+        "metal",
+        str(air_file),
+        "-o",
+        str(metallib),
     ]
     with _phase(timings, "metal_compile"):
         compiled = _run(metal_command)
@@ -188,7 +212,9 @@ def _build_metallib(metal_source, output, cache, timings, compile_context):
         return _failure("metal", compiled["exception"], metal_command)
     if compiled["returncode"] != 0:
         return _failure(
-            "metal", compiled["stderr"].strip(), metal_command,
+            "metal",
+            compiled["stderr"].strip(),
+            metal_command,
             parse_compiler_diagnostics(compiled["stderr"], code="MetalCompileError"),
             compiled["stderr"],
         )
@@ -198,7 +224,9 @@ def _build_metallib(metal_source, output, cache, timings, compile_context):
         return _failure("metal_link", linked["exception"], metallib_command)
     if linked["returncode"] != 0:
         return _failure(
-            "metal_link", linked["stderr"].strip(), metallib_command,
+            "metal_link",
+            linked["stderr"].strip(),
+            metallib_command,
             parse_compiler_diagnostics(linked["stderr"], code="MetalLibraryLinkFailed"),
             linked["stderr"],
         )
@@ -214,15 +242,25 @@ def _build_metallib(metal_source, output, cache, timings, compile_context):
 def _build_runtime_library(root, cache, output, optimization, timings):
     runtime_include = root / "runtime" / "include"
     runtime_sources = sorted((root / "runtime" / "src").glob("*.mm"))
-    runtime_inputs = [*runtime_sources, *sorted(runtime_include.glob("*")), root / "runtime" / "src" / "runtime_internal.h"]
-    key = fingerprint({
-        "files": [(str(path.relative_to(root)), _file_hash(path)) for path in runtime_inputs if path.is_file()],
-        "optimization": optimization,
-        "architecture": platform.machine(),
-        "runtime_abi": RUNTIME_ABI,
-        "native_pipeline": 2,
-        "toolchain": _toolchain_identity(),
-    })
+    runtime_inputs = [
+        *runtime_sources,
+        *sorted(runtime_include.glob("*")),
+        root / "runtime" / "src" / "runtime_internal.h",
+    ]
+    key = fingerprint(
+        {
+            "files": [
+                (str(path.relative_to(root)), _file_hash(path))
+                for path in runtime_inputs
+                if path.is_file()
+            ],
+            "optimization": optimization,
+            "architecture": platform.machine(),
+            "runtime_abi": RUNTIME_ABI,
+            "native_pipeline": 2,
+            "toolchain": _toolchain_identity(),
+        }
+    )
     destination = output / "libmcu_runtime.a"
     if cache.restore("runtime", key, "libmcu_runtime.a", destination):
         if timings:
@@ -238,9 +276,19 @@ def _build_runtime_library(root, cache, output, optimization, timings):
         for index, source in enumerate(runtime_sources):
             object_path = temporary_path / f"runtime_{index}.o"
             command = [
-                "xcrun", "clang++", "-std=c++17", "-fobjc-arc", optimization,
-                "-I", str(runtime_include), "-I", str(root / "runtime" / "src"),
-                "-c", str(source), "-o", str(object_path),
+                "xcrun",
+                "clang++",
+                "-std=c++17",
+                "-fobjc-arc",
+                optimization,
+                "-I",
+                str(runtime_include),
+                "-I",
+                str(root / "runtime" / "src"),
+                "-c",
+                str(source),
+                "-o",
+                str(object_path),
             ]
             compile_jobs.append((object_path, command))
         with _phase(timings, "runtime_compile"):
@@ -251,7 +299,9 @@ def _build_runtime_library(root, cache, output, optimization, timings):
                 return _failure("runtime_compile", compiled["exception"], command)
             if compiled["returncode"] != 0:
                 return _failure(
-                    "runtime_compile", compiled["stderr"].strip(), command,
+                    "runtime_compile",
+                    compiled["stderr"].strip(),
+                    command,
                     parse_compiler_diagnostics(compiled["stderr"], code="RuntimeCompileFailed"),
                     compiled["stderr"],
                 )
@@ -272,28 +322,39 @@ def _build_runtime_library(root, cache, output, optimization, timings):
 
 
 def _build_host_objects(
-    sources, headers, object_directory, runtime_include, host_directory, cache,
-    optimization, timings, compile_context, host_flags, transformed_include_paths,
+    sources,
+    headers,
+    object_directory,
+    runtime_include,
+    host_directory,
+    cache,
+    optimization,
+    timings,
+    compile_context,
+    host_flags,
+    transformed_include_paths,
 ):
     objects = []
+    compile_jobs = []
     header_hashes = [(str(path), _file_hash(path)) for path in headers]
     runtime_header_hashes = [
-        (str(path.name), _file_hash(path))
-        for path in sorted(Path(runtime_include).glob("*.h"))
+        (str(path.name), _file_hash(path)) for path in sorted(Path(runtime_include).glob("*.h"))
     ]
     for index, source in enumerate(sources):
         object_path = object_directory / f"host_{index}.o"
-        key = fingerprint({
-            "source": source.read_text(encoding="utf-8"),
-            "headers": header_hashes,
-            "runtime_headers": runtime_header_hashes,
-            "optimization": optimization,
-            "architecture": platform.machine(),
-            "runtime_abi": RUNTIME_ABI,
-            "compile_context": compile_context,
-            "host_flags": host_flags,
-            "toolchain": _toolchain_identity(),
-        })
+        key = fingerprint(
+            {
+                "source": source.read_text(encoding="utf-8"),
+                "headers": header_hashes,
+                "runtime_headers": runtime_header_hashes,
+                "optimization": optimization,
+                "architecture": platform.machine(),
+                "runtime_abi": RUNTIME_ABI,
+                "compile_context": compile_context,
+                "host_flags": host_flags,
+                "toolchain": _toolchain_identity(),
+            }
+        )
         if cache.restore("host", key, "host.o", object_path):
             if timings:
                 timings.cache("host", True, key)
@@ -302,27 +363,48 @@ def _build_host_objects(
         if timings:
             timings.cache("host", False, key)
         command = [
-            "xcrun", "clang++", "-std=c++17", "-fobjc-arc", optimization,
-            "-I", str(runtime_include), "-I", str(host_directory),
+            "xcrun",
+            "clang++",
+            "-std=c++17",
+            "-fobjc-arc",
+            optimization,
+            "-I",
+            str(runtime_include),
+            "-I",
+            str(host_directory),
             *[item for path in transformed_include_paths for item in ("-I", path)],
             *[item for path in compile_context.get("include_paths", []) for item in ("-I", path)],
             *[f"-D{value}" for value in compile_context.get("definitions", [])],
             *[f"-U{value}" for value in compile_context.get("undefinitions", [])],
             *host_flags,
-            "-c", str(source), "-o", str(object_path),
+            "-c",
+            str(source),
+            "-o",
+            str(object_path),
         ]
+        compile_jobs.append((object_path, key, command))
+
+    if compile_jobs:
         with _phase(timings, "host_compile"):
-            compiled = _run(command)
+            with ThreadPoolExecutor(max_workers=min(4, len(compile_jobs))) as executor:
+                compile_results = list(executor.map(lambda job: _run(job[2]), compile_jobs))
+    else:
+        compile_results = []
+
+    for (object_path, key, command), compiled in zip(compile_jobs, compile_results):
         if compiled["exception"]:
             return _failure("host_compile", compiled["exception"], command)
         if compiled["returncode"] != 0:
             return _failure(
-                "host_compile", compiled["stderr"].strip(), command,
+                "host_compile",
+                compiled["stderr"].strip(),
+                command,
                 parse_compiler_diagnostics(compiled["stderr"], code="HostCompileError"),
                 compiled["stderr"],
             )
         cache.publish("host", key, "host.o", object_path)
         objects.append(object_path)
+    objects.sort(key=lambda path: int(path.stem.rsplit("_", 1)[-1]))
     return {"ok": True, "objects": objects}
 
 
@@ -367,35 +449,72 @@ def _transform_host_sources(source_paths, host_directory):
 
 
 def _build_key(
-    source_paths, native_objects, build_output, optimization, executable, root,
-    compile_context, host_flags, native_link_flags,
+    source_paths,
+    native_objects,
+    build_output,
+    optimization,
+    executable,
+    root,
+    compile_context,
+    host_flags,
+    native_link_flags,
 ):
     runtime_files = sorted((root / "runtime").rglob("*"))
-    return fingerprint({
-        "sources": [(str(path), _file_hash(path)) for path in source_paths],
-        "native_objects": [(str(path), _file_hash(path)) for path in native_objects],
-        "metal": build_output["metal_source"],
-        "routing": build_output["routing_table_text"],
-        "optimization": optimization,
-        "executable": str(executable),
-        "mcu_version": MCU_VERSION,
-        "runtime_abi": RUNTIME_ABI,
-        "native_pipeline": 2,
-        "compile_context": compile_context,
-        "host_flags": host_flags,
-        "native_link_flags": native_link_flags,
-        "toolchain": _toolchain_identity(),
-        "runtime_sources": [
-            (str(path.relative_to(root)), _file_hash(path))
-            for path in runtime_files if path.is_file()
-        ],
-    })
+    return fingerprint(
+        {
+            "sources": [(str(path), _file_hash(path)) for path in source_paths],
+            "native_objects": [(str(path), _file_hash(path)) for path in native_objects],
+            "metal": build_output["metal_source"],
+            # Pass timings are diagnostic telemetry and vary on every invocation.
+            # They must not invalidate an otherwise identical native executable.
+            "routing": _stable_routing_for_cache(build_output),
+            "optimization": optimization,
+            "executable": str(executable),
+            "mcu_version": MCU_VERSION,
+            "runtime_abi": RUNTIME_ABI,
+            "native_pipeline": 2,
+            "compile_context": compile_context,
+            "host_flags": host_flags,
+            "native_link_flags": native_link_flags,
+            "toolchain": _toolchain_identity(),
+            "runtime_sources": [
+                (str(path.relative_to(root)), _file_hash(path))
+                for path in runtime_files
+                if path.is_file()
+            ],
+        }
+    )
+
+
+def _stable_routing_for_cache(build_output):
+    routing = build_output.get("routing_table")
+    if routing is None:
+        try:
+            routing = json.loads(build_output["routing_table_text"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return build_output.get("routing_table_text", "")
+    return _without_telemetry(routing)
+
+
+def _without_telemetry(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_telemetry(item)
+            for key, item in value.items()
+            if key not in {"timing_ms", "optimization_total_ms"}
+        }
+    if isinstance(value, list):
+        return [_without_telemetry(item) for item in value]
+    return value
 
 
 def _is_noop_build(manifest_path, build_key, executable, output):
     if not manifest_path.is_file() or not executable.is_file():
         return False
-    if not (output / "generated.metallib").is_file() or not (output / "routing_table.txt").is_file():
+    if (
+        not (output / "generated.metallib").is_file()
+        or not (output / "routing_table.txt").is_file()
+    ):
         return False
     try:
         return json.loads(manifest_path.read_text(encoding="utf-8")).get("build_key") == build_key

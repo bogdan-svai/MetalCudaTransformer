@@ -1,53 +1,183 @@
 # SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
-# SYSTEM LAYER: STAGE 15 - PERFORMANCE ENGINEERING & AUTOTUNING
+# SYSTEM LAYER: STAGE 15 - PERFORMANCE ENGINEERING AND AUTOTUNING
 # -----------------------------------------------------------------------------
 
-## 1. OBJECTIVE
-Stage 15 optimizes the complete, tested compiler/runtime without adding new CUDA
-semantics. Every optimization is guarded by correctness tests, reproducible
-benchmarks, hardware identity, and a reversible decision record.
+## 1. Objective
+Stage 15 makes the already-tested Stage 1-14 compiler/runtime faster and easier
+to reason about. It must not add broad new CUDA semantics. New functionality is
+allowed only when it exists to measure, select, cache, or explain an
+optimization safely.
 
-## 2. MEASUREMENT FIRST
-* Establish cold/warm compile, startup, CPU submission, GPU execution, transfer,
-  synchronization, memory, and throughput baselines for every reference workload.
-* Report median, p95, variance, thermal/warm-up policy, SDK, MCU revision, and
-  Apple GPU identity.
-* Use Metal counters/profiling where available; do not infer a bottleneck from
-  end-to-end wall time alone.
-* Preserve the 2026-06-23 external `test3` baseline: 11 blocks, five runs,
-  minimum total Merkle 0.04015 s, minimum total nonce 27.31680 s, and minimum
-  combined 27.35695 s. The nonce path is the first optimization target.
+The central rule is: correctness remains fixed, optimization decisions become
+measured and reversible.
 
-## 3. COMPILER OPTIMIZATION
-* Autotune block geometry and safe coarsening from target limits and measured cost.
-* Specialize constants/address spaces only when code-size and cache impact remain
-  bounded.
-* Eliminate dead helpers, duplicate variants, redundant bounds work, and avoidable
-  host/device metadata processing.
-* Cache semantic IR, device-link plans, metallibs, pipeline archives, and final
-  links with measured hit/miss costs.
-* Benchmark SHA-specific constant placement, rotate lowering, loop unrolling,
-  register pressure, helper inlining, and nonce batch geometry independently.
-* Report candidates/s and time per mined block; do not hide poor kernel
-  throughput behind aggregate process startup measurements.
+## 2. Baseline First
+Stage 15 starts with a reproducible performance report, not with a rewrite.
 
-## 4. RUNTIME OPTIMIZATION
-* Pool/reuse Metal buffers with bounded memory and deterministic release policy.
-* Batch command encoding and synchronization through Stage 10 semantics.
-* Use pipeline/binary archives and graph replay to reduce startup/submission cost.
-* Optimize copy/memset paths for unified memory without weakening CUDA validation.
+The baseline report must include:
 
-## 5. AUTOTUNING SAFETY
-* Tuning candidates run outside correctness baselines and are keyed by workload,
-  target, SDK, compiler version, and relevant dimensions.
-* A timeout, crash, numerical mismatch, or unstable result rejects the candidate.
-* Deterministic conservative defaults remain available through a CLI option.
-* Tuning databases are versioned, bounded, inspectable, and safely invalidated.
+* MCU revision and runtime ABI;
+* target OS, architecture, Python version, SDK path, and Apple GPU name;
+* cold build time;
+* incremental build time;
+* no-op build median/p95;
+* frontend, device link, codegen, Metal compile/link, host compile/link timing;
+* runtime startup, artifact load, pipeline creation, command submission,
+  synchronization, GPU execution, copy/fill metrics;
+* Stage 10 scheduler speedups;
+* CUDA checker case build/run timings by tier;
+* slowest cases and failed budget reasons.
 
-## 6. EXIT CRITERIA
-* Reference workloads have before/after reports with statistically meaningful
-  improvements or a documented platform bottleneck.
-* No Stage 1-14 correctness or compatibility test regresses.
-* Build/no-op/startup/runtime budgets are enforced in CI where runner variance
-  permits and reported elsewhere.
-* MCU can explain selected geometry, cache decisions, and tuning choices.
+Implementation:
+
+* `scripts/verify_stage15.py` aggregates Stage 9, Stage 10, Stage 11, and CUDA
+  checker reports into one JSON artifact.
+* The Stage 15 report is not part of the normal pre-push gate initially because
+  it intentionally duplicates expensive benchmark work. `make verify` remains
+  the correctness gate; Stage 15 report is the performance gate.
+
+## 3. Optimization Tracks
+
+### 3.1 Compile-Time Path
+Optimize:
+
+* semantic parse/device-link cache reuse;
+* host/object cache invalidation keys;
+* Metal compile/link cache hit rate;
+* no-op `mcu make` behavior;
+* repeated command startup overhead;
+* duplicate helper and symbol manifest emission.
+
+Primary metrics:
+
+* clean build seconds;
+* incremental build seconds;
+* no-op p95;
+* cache hit/miss counts by layer;
+* driver invocation count.
+
+### 3.2 Runtime Startup Path
+Optimize:
+
+* runtime archive reuse;
+* artifact discovery;
+* metallib load;
+* pipeline creation;
+* first dispatch.
+
+Primary metrics:
+
+* `device_initialization`;
+* `artifact_load`;
+* `pipeline_creation`;
+* first-run wall time;
+* warm-run wall time.
+
+### 3.3 Dispatch and Scheduler Path
+Optimize:
+
+* many small kernel launches;
+* stream enqueue overhead;
+* synchronization points;
+* command buffer batching where Stage 10 ordering allows it;
+* graph launch overhead after Stage 14 correctness.
+
+Primary metrics:
+
+* command buffers submitted;
+* kernel dispatch count;
+* command submission seconds;
+* synchronization wait seconds;
+* Stage 10 median/minimum speedup;
+* graph replay wall time vs direct stream work.
+
+### 3.4 Memory Path
+Optimize:
+
+* device allocation/free cost;
+* small copy/memset paths;
+* shared-memory unified-copy behavior;
+* bounded buffer pooling only when lifetime rules are preserved.
+
+Primary metrics:
+
+* allocation p95;
+* memory copy/fill bytes;
+* async copy bytes;
+* synchronization introduced by memory operations.
+
+### 3.5 Kernel Shape and Autotuning
+Optimize only with correctness-checked candidates:
+
+* block geometry;
+* coarsening factor;
+* SHA-style rotate/constant placement;
+* loop unrolling;
+* helper inlining;
+* graph replay choices.
+
+Candidate rejection rules:
+
+* compile error;
+* runtime crash;
+* timeout;
+* output mismatch;
+* unstable median/p95;
+* larger code/cache cost without a measured win.
+
+## 4. Safety Contract
+
+Stage 15 must keep:
+
+* all Stage 1-14 tests passing;
+* deterministic outputs for Stage 9 project workloads;
+* CUDA checker passing for every easy/medium/hard/stress case;
+* conservative defaults available when autotuning data is missing or invalid;
+* machine-readable reasons for every selected or rejected optimization.
+
+The compiler must never silently choose an optimization that changes accepted
+CUDA semantics.
+
+## 5. Baseline Budgets
+
+Initial budgets are inherited from Stage 9 and Stage 10:
+
+* no-op build p95 <= 0.20s;
+* incremental build <= 1.50s;
+* clean build <= 10.00s;
+* cold startup p95 <= 0.25s;
+* command submission p95 <= 0.05s;
+* Stage 10 medium median speedup >= 1.25;
+* Stage 10 large regression <= 10%;
+* CUDA checker pass rate 100%.
+
+Stage 15 may tighten budgets only after a stable baseline exists across multiple
+runs on the same hardware.
+
+## 6. Acceptance Criteria
+
+Stage 15 is complete when:
+
+* `scripts/verify_stage15.py` produces a stable JSON report;
+* the report records hardware, SDK, MCU revision, and runtime ABI;
+* at least one compile-time and one runtime optimization are implemented with
+  before/after data;
+* every optimization has a fallback path;
+* `make verify` passes;
+* CUDA checker remains 100%;
+* the Stage 15 report explains selected cache/tuning decisions.
+
+## 7. Out of Scope
+
+Stage 15 does not implement:
+
+* new broad CUDA language semantics;
+* cooperative groups;
+* dynamic parallelism;
+* texture/surface memory;
+* cuRAND/cuFFT/Thrust;
+* unsupported warp masks/ballot semantics;
+* broad graph update semantics.
+
+Those are future compatibility stages unless a narrow implementation is needed
+for performance measurement and is independently tested.

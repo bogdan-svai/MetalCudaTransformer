@@ -139,7 +139,13 @@ bool StreamRegistry::synchronizeState(StreamState& state, std::string& error) {
         CFTimeInterval gpu_start = [pending.command GPUStartTime];
         CFTimeInterval gpu_end = [pending.command GPUEndTime];
         if (gpu_end >= gpu_start && gpu_start > 0.0) {
-            recordRuntimeMetric("gpu_execution", gpu_end - gpu_start);
+            double gpu_seconds = gpu_end - gpu_start;
+            recordRuntimeMetric("gpu_execution", gpu_seconds);
+            const std::string kernel_prefix = "kernel ";
+            if (pending.operation.rfind(kernel_prefix, 0) == 0) {
+                std::string kernel_name = pending.operation.substr(kernel_prefix.size());
+                recordRuntimeMetric((std::string("gpu_execution.kernel.") + kernel_name).c_str(), gpu_seconds);
+            }
         }
         if (pending.host_destination && pending.copy_size) {
             std::memcpy(pending.host_destination, [pending.staging contents], pending.copy_size);

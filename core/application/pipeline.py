@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from core.backends.metal import transpile
@@ -80,6 +81,16 @@ class CompilerPipeline:
             function.get("kind") in {"DEVICE_FUNC", "HOST_DEVICE_FUNC"}
             for function in metadata.get("functions", [])
         )
+        if os.environ.get("MCU_SEMANTIC_STRICT", "0") == "1" and not semantic.complete:
+            diagnostics.extend(item for item in semantic_errors if item not in diagnostics)
+            diagnostics.append({
+                "code": "SemanticFrontendRequired",
+                "severity": "error",
+                "message": "MCU_SEMANTIC_STRICT=1 requires complete libclang semantic IR; regex fallback is disabled.",
+                "file": None,
+                "line": None,
+                "column": None,
+            })
         if requires_semantic and not semantic.complete:
             diagnostics.extend(
                 item for item in semantic_errors

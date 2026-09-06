@@ -2,7 +2,6 @@ import re
 
 from core.frontend.regex_parser import find_matching_delimiter, split_top_level
 
-
 TYPE_REPLACEMENTS = [
     (r"\bunsigned\s+long\s+long\b", "ulong"),
     (r"\blong\s+long\b", "long"),
@@ -34,22 +33,25 @@ def render_device_components(project, plan):
             function,
             variant.parameter_address_spaces,
         )
-        helpers.append(_render_helper(
-            function,
-            variant,
-            body,
-            plan.atomic_parameters.get(function.symbol_id, {}),
-        ))
+        body = mark_readonly_literal_arrays(body)
+        helpers.append(
+            _render_helper(
+                function,
+                variant,
+                body,
+                plan.atomic_parameters.get(function.symbol_id, {}),
+            )
+        )
     return declarations, helpers
 
 
 def rewrite_kernel_calls(body, kernel, plan):
     spaces = tuple(
-        "device" if parameter.type.pointer_depth else None
-        for parameter in kernel.parameters
+        "device" if parameter.type.pointer_depth else None for parameter in kernel.parameters
     )
     rewritten = rewrite_device_calls(body, kernel, spaces, plan)
-    return rewrite_address_space_syntax(rewritten, kernel, spaces)
+    rewritten = rewrite_address_space_syntax(rewritten, kernel, spaces)
+    return mark_readonly_literal_arrays(rewritten)
 
 
 def rewrite_device_calls(body, function, spaces, plan):
@@ -69,15 +71,7 @@ def rewrite_device_calls(body, function, spaces, plan):
 
     rewritten = body
     for name, targets in targets_by_name.items():
-        index = 0
-
-        def replace(_match):
-            nonlocal index
-            target = targets[min(index, len(targets) - 1)]
-            index += 1
-            return target + "("
-
-        rewritten = re.sub(rf"\b{re.escape(name)}\s*\(", replace, rewritten)
+        rewritten = _replace_call_identifiers(rewritten, name, targets)
 
     for name, rule in plan.intrinsics_used.items():
         if rule.get("lowering_handler") == "lower_typed_atomic":
@@ -95,11 +89,44 @@ def rewrite_device_calls(body, function, spaces, plan):
                     rewritten,
                 )
                 continue
-            rewritten = re.sub(rf"\b{re.escape(name)}\s*\(", target + "(", rewritten)
+            rewritten = _replace_call_identifiers(rewritten, name, [target])
     return _rewrite_atomic_loads(
         rewritten,
         plan.atomic_parameters.get(function.symbol_id, {}),
     )
+
+
+def _replace_call_identifiers(source, name, replacements):
+    """Rewrite call identifiers using a lexical scanner, not regular expressions."""
+    if not name or not replacements:
+        return source
+    pieces = []
+    cursor = 0
+    replacement_index = 0
+    length = len(source)
+    while cursor < length:
+        position = source.find(name, cursor)
+        if position < 0:
+            pieces.append(source[cursor:])
+            break
+        before = source[position - 1] if position else " "
+        after_position = position + len(name)
+        after = source[after_position] if after_position < length else " "
+        if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
+            cursor = after_position
+            continue
+        opening = after_position
+        while opening < length and source[opening].isspace():
+            opening += 1
+        if opening >= length or source[opening] != "(":
+            cursor = after_position
+            continue
+        pieces.append(source[cursor:position])
+        target = replacements[min(replacement_index, len(replacements) - 1)]
+        replacement_index += 1
+        pieces.append(target)
+        cursor = after_position
+    return "".join(pieces)
 
 
 def _rewrite_warp_intrinsic_calls(body, name, target):
@@ -110,7 +137,9 @@ def _rewrite_warp_intrinsic_calls(body, name, target):
         closing = find_matching_delimiter(body, opening, "(", ")")
         if closing is None:
             continue
-        arguments = [item.strip() for item in split_top_level(body[opening + 1:closing]) if item.strip()]
+        arguments = [
+            item.strip() for item in split_top_level(body[opening + 1 : closing]) if item.strip()
+        ]
         replacement = None
         if name == "__activemask" and not arguments:
             replacement = target
@@ -139,11 +168,9 @@ def _rewrite_atomic_calls(body, name, target):
         closing = find_matching_delimiter(body, opening, "(", ")")
         if closing is None:
             continue
-        arguments = [item.strip() for item in split_top_level(body[opening + 1:closing])]
+        arguments = [item.strip() for item in split_top_level(body[opening + 1 : closing])]
         if name == "atomicCAS" and len(arguments) == 3:
-            replacement = (
-                f"mcu_atomic_cas({arguments[0]}, {arguments[1]}, {arguments[2]})"
-            )
+            replacement = f"mcu_atomic_cas({arguments[0]}, {arguments[1]}, {arguments[2]})"
         elif len(arguments) == 2:
             replacement = f"{target}({arguments[0]}, {arguments[1]}, memory_order_relaxed)"
         else:
@@ -199,15 +226,18 @@ def rewrite_address_space_syntax(body, function, spaces):
                 continue
             expressions = [declaration["initializer"]]
             expressions.extend(
-                match.group(1)
-                for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
+                match.group(1) for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
             )
-            inferred = next((
-                space
-                for expression in expressions if expression
-                for space in [_expression_space(expression, storage)]
-                if space
-            ), None)
+            inferred = next(
+                (
+                    space
+                    for expression in expressions
+                    if expression
+                    for space in [_expression_space(expression, storage)]
+                    if space
+                ),
+                None,
+            )
             if inferred:
                 storage[name] = inferred
                 unresolved.remove(name)
@@ -248,6 +278,32 @@ def rewrite_address_space_syntax(body, function, spaces):
     return cast_pattern.sub(replace_cast, rewritten)
 
 
+def mark_readonly_literal_arrays(body):
+    array_pattern = re.compile(
+        r"(?P<prefix>^[ \t]*)(?P<type>(?:(?:unsigned|signed)\s+)?(?:WORD|BYTE|uint|int|ulong|long|uchar|char))\s+"
+        r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>\d+)\s*\]\s*=\s*\{"
+        r"(?P<values>[^{}]*)"
+        r"\};",
+        re.MULTILINE | re.DOTALL,
+    )
+    replacements = []
+    for match in array_pattern.finditer(body):
+        name = match.group("name")
+        remaining = body[: match.start()] + body[match.end() :]
+        if re.search(rf"\b{re.escape(name)}\s*\[[^]]+\]\s*=", remaining):
+            continue
+        if re.search(rf"\b{re.escape(name)}\s*=", remaining):
+            continue
+        replacement = (
+            f"{match.group('prefix')}const {match.group('type')} {name}"
+            f"[{match.group('size')}] = {{{match.group('values')}}};"
+        )
+        replacements.append((match.start(), match.end(), replacement))
+    for start, end, replacement in reversed(replacements):
+        body = body[:start] + replacement + body[end:]
+    return body
+
+
 def _pointer_declarations(body):
     pattern = re.compile(
         r"(?m)^[ \t]*(?:const\s+)?[A-Za-z_]\w*\s*\*\s*"
@@ -271,11 +327,24 @@ def _expression_space(expression, storage):
 
 def _render_helper(function, variant, body, atomic_parameters=None):
     atomic_parameters = atomic_parameters or {}
+    readonly = readonly_pointer_parameters(
+        function.parameters,
+        body,
+        atomic_parameters,
+        effects=function.effects,
+    )
     parameters = []
     for index, parameter in enumerate(function.parameters):
         space = variant.parameter_address_spaces[index]
         atomic_type = atomic_parameters.get(parameter.name, {}).get("type")
-        parameters.append(_render_parameter(parameter, space, atomic_type))
+        parameters.append(
+            _render_parameter(
+                parameter,
+                space,
+                atomic_type,
+                readonly=parameter.name in readonly,
+            )
+        )
     params = ", ".join(parameters)
     source = _line_directive(function.source.file, function.body_line or function.source.line)
     rendered_body = _indent(body)
@@ -285,16 +354,114 @@ def _render_helper(function, variant, body, atomic_parameters=None):
     )
 
 
-def _render_parameter(parameter, address_space, atomic_type=None):
+def _render_parameter(parameter, address_space, atomic_type=None, readonly=False):
     canonical = parameter.type.canonical
     if parameter.type.pointer_depth:
         if atomic_type:
             return f"{address_space or 'thread'} {atomic_type}* {parameter.name}"
         base = canonical.replace("*", "").strip()
-        const_prefix = "const " if base.startswith("const ") else ""
+        const_prefix = "const " if readonly or base.startswith("const ") else ""
         base = base.removeprefix("const ").strip()
         return f"{const_prefix}{address_space or 'thread'} {_map_type(base)}* {parameter.name}"
     return f"{_map_type(canonical)} {parameter.name}"
+
+
+def readonly_pointer_parameters(parameters, body, atomic_parameters=None, effects=None):
+    atomic_parameters = atomic_parameters or {}
+    effects = effects or {}
+    # Semantic IR is authoritative. The textual checks remain only for callers
+    # that use this low-level helper without a semantic project.
+    if effects:
+        written = set(effects.get("writes_parameters", []))
+        unknown = set(effects.get("unknown_calls", []))
+        passed_to_unknown = set(effects.get("unknown_pointer_arguments", []))
+        # Keep mutable local aliases valid in generated Metal. A CUDA kernel
+        # may bind a readonly parameter to a non-const local pointer; adding
+        # ``const`` to the parameter would make that legal CUDA pattern fail
+        # Metal's stricter qualifier checks.
+        aliased = set(effects.get("pointer_aliases", {}).values())
+        return {
+            parameter.name
+            for parameter in parameters
+            if parameter.type.pointer_depth
+            and parameter.name not in atomic_parameters
+            and parameter.name not in written
+            and parameter.name not in passed_to_unknown
+            and parameter.name not in aliased
+            and not _has_mutable_local_pointer_alias(body, parameter.name)
+            and not (unknown and parameter.name in passed_to_unknown)
+        }
+    readonly = set()
+    for parameter in parameters:
+        if not parameter.type.pointer_depth or parameter.name in atomic_parameters:
+            continue
+        if _pointer_is_written(body, parameter.name):
+            continue
+        if _pointer_is_passed_to_call(body, parameter.name):
+            continue
+        readonly.add(parameter.name)
+    return readonly
+
+
+def _has_mutable_local_pointer_alias(body, parameter_name):
+    """Conservatively detect a local pointer initialized from a parameter."""
+    cursor = 0
+    while True:
+        position = body.find(parameter_name, cursor)
+        if position < 0:
+            return False
+        before = body[position - 1] if position else " "
+        after = (
+            body[position + len(parameter_name)]
+            if position + len(parameter_name) < len(body)
+            else " "
+        )
+        if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+            statement_start = max(body.rfind(";", 0, position), body.rfind("\n", 0, position))
+            prefix = body[statement_start + 1 : position]
+            if "*" in prefix and "=" in prefix:
+                return True
+        cursor = position + len(parameter_name)
+
+
+def _pointer_is_written(body, name):
+    escaped = re.escape(name)
+    return any(
+        re.search(pattern, body)
+        for pattern in [
+            rf"\b{escaped}\s*\[[^]]+\]\s*(?:[-+*/%&|^]?=|--|\+\+)",
+            rf"\b{escaped}\s*->\s*[A-Za-z_]\w*(?:\s*\[[^]]+\])?\s*(?:[-+*/%&|^]?=|--|\+\+)",
+            rf"(?:--|\+\+)\s*{escaped}\s*\[",
+            rf"\*\s*{escaped}\s*(?:[-+*/%&|^]?=|--|\+\+)",
+            rf"\b{escaped}\s*(?:[-+*/%&|^]?=)",
+            rf"\b(?:const\s+)?[A-Za-z_]\w*\s*\*\s*[A-Za-z_]\w*\s*=\s*[^;]*\b{escaped}\b",
+        ]
+    )
+
+
+def _pointer_is_passed_to_call(body, name):
+    escaped = re.escape(name)
+    keywords = {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "return",
+        "sizeof",
+        "reinterpret_cast",
+        "static_cast",
+    }
+    pattern = re.compile(r"\b(?P<callee>[A-Za-z_]\w*)\s*\(")
+    for match in pattern.finditer(body):
+        if match.group("callee") in keywords:
+            continue
+        opening = match.end() - 1
+        closing = find_matching_delimiter(body, opening, "(", ")")
+        if closing is None:
+            continue
+        if re.search(rf"\b{escaped}\b", body[opening + 1 : closing]):
+            return True
+    return False
 
 
 def _render_types(project):
@@ -303,10 +470,7 @@ def _render_types(project):
         if name.startswith("__") or name in {"dim3"}:
             continue
         if declaration.fields:
-            fields = "\n".join(
-                "    " + _render_field(field)
-                for field in declaration.fields
-            )
+            fields = "\n".join("    " + _render_field(field) for field in declaration.fields)
             lines.append(f"struct {name} {{\n{fields}\n}};")
         elif declaration.kind == "alias" and declaration.underlying_type:
             underlying = declaration.underlying_type
@@ -339,57 +503,63 @@ def _render_intrinsic_prelude(plan):
         rule.get("lowering_handler") == "lower_warp_intrinsic"
         for rule in plan.intrinsics_used.values()
     ):
-        lines.extend([
-            "template <typename T>",
-            "inline T mcu_warp_shfl_sync(uint mask, T value, uint source_lane, uint width, uint lane) {",
-            "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle(value, source_lane) : value;",
-            "}",
-            "template <typename T>",
-            "inline T mcu_warp_shfl_down_sync(uint mask, T value, uint delta, uint width, uint lane) {",
-            "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle_down(value, delta) : value;",
-            "}",
-            "inline int mcu_warp_any_sync(uint mask, bool predicate) {",
-            "    return (mask == 0xffffffffu && simd_any(predicate)) ? 1 : 0;",
-            "}",
-            "inline int mcu_warp_all_sync(uint mask, bool predicate) {",
-            "    return (mask == 0xffffffffu && simd_all(predicate)) ? 1 : 0;",
-            "}",
-            "inline int mcu_warp_any_sync(uint mask, int predicate) {",
-            "    return mcu_warp_any_sync(mask, predicate != 0);",
-            "}",
-            "inline int mcu_warp_all_sync(uint mask, int predicate) {",
-            "    return mcu_warp_all_sync(mask, predicate != 0);",
-            "}",
-        ])
+        lines.extend(
+            [
+                "template <typename T>",
+                "inline T mcu_warp_shfl_sync(uint mask, T value, uint source_lane, uint width, uint lane) {",
+                "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle(value, source_lane) : value;",
+                "}",
+                "template <typename T>",
+                "inline T mcu_warp_shfl_down_sync(uint mask, T value, uint delta, uint width, uint lane) {",
+                "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle_down(value, delta) : value;",
+                "}",
+                "inline int mcu_warp_any_sync(uint mask, bool predicate) {",
+                "    return (mask == 0xffffffffu && simd_any(predicate)) ? 1 : 0;",
+                "}",
+                "inline int mcu_warp_all_sync(uint mask, bool predicate) {",
+                "    return (mask == 0xffffffffu && simd_all(predicate)) ? 1 : 0;",
+                "}",
+                "inline int mcu_warp_any_sync(uint mask, int predicate) {",
+                "    return mcu_warp_any_sync(mask, predicate != 0);",
+                "}",
+                "inline int mcu_warp_all_sync(uint mask, int predicate) {",
+                "    return mcu_warp_all_sync(mask, predicate != 0);",
+                "}",
+            ]
+        )
     if "memset" in plan.intrinsics_used:
         for space in ("thread", "device", "threadgroup"):
-            lines.extend([
-                "template <typename T>",
-                f"inline {space} T* mcu_device_memset({space} T* destination, int value, ulong count) {{",
-                f"    {space} uchar* bytes = reinterpret_cast<{space} uchar*>(destination);",
-                "    for (ulong i = 0; i < count; ++i) bytes[i] = uchar(value);",
-                "    return destination;",
-                "}",
-            ])
+            lines.extend(
+                [
+                    "template <typename T>",
+                    f"inline {space} T* mcu_device_memset({space} T* destination, int value, ulong count) {{",
+                    f"    {space} uchar* bytes = reinterpret_cast<{space} uchar*>(destination);",
+                    "    for (ulong i = 0; i < count; ++i) bytes[i] = uchar(value);",
+                    "    return destination;",
+                    "}",
+                ]
+            )
     if "atomicCAS" in plan.intrinsics_used:
-        lines.extend([
-            "template <typename T, typename V>",
-            "inline V mcu_atomic_cas(device atomic<T>* target, V compare, V value) {",
-            "    T expected = T(compare);",
-            "    while (!atomic_compare_exchange_weak_explicit(target, &expected, T(value), memory_order_relaxed, memory_order_relaxed)) {",
-            "        if (expected != T(compare)) break;",
-            "    }",
-            "    return V(expected);",
-            "}",
-            "template <typename T, typename V>",
-            "inline V mcu_atomic_cas(threadgroup atomic<T>* target, V compare, V value) {",
-            "    T expected = T(compare);",
-            "    while (!atomic_compare_exchange_weak_explicit(target, &expected, T(value), memory_order_relaxed, memory_order_relaxed)) {",
-            "        if (expected != T(compare)) break;",
-            "    }",
-            "    return V(expected);",
-            "}",
-        ])
+        lines.extend(
+            [
+                "template <typename T, typename V>",
+                "inline V mcu_atomic_cas(device atomic<T>* target, V compare, V value) {",
+                "    T expected = T(compare);",
+                "    while (!atomic_compare_exchange_weak_explicit(target, &expected, T(value), memory_order_relaxed, memory_order_relaxed)) {",
+                "        if (expected != T(compare)) break;",
+                "    }",
+                "    return V(expected);",
+                "}",
+                "template <typename T, typename V>",
+                "inline V mcu_atomic_cas(threadgroup atomic<T>* target, V compare, V value) {",
+                "    T expected = T(compare);",
+                "    while (!atomic_compare_exchange_weak_explicit(target, &expected, T(value), memory_order_relaxed, memory_order_relaxed)) {",
+                "        if (expected != T(compare)) break;",
+                "    }",
+                "    return V(expected);",
+                "}",
+            ]
+        )
     return lines
 
 
@@ -407,6 +577,5 @@ def _line_directive(file, line):
 
 def _indent(body):
     return "\n".join(
-        "    " + line.lstrip() if line.strip() else ""
-        for line in body.rstrip().splitlines()
+        "    " + line.lstrip() if line.strip() else "" for line in body.rstrip().splitlines()
     )

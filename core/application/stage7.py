@@ -1,6 +1,6 @@
-import os
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -17,6 +17,16 @@ from core.objects import McuObjectError, create_mcu_object, load_mcu_object, wri
 from core.passes.coarsening import plan_coarsening
 from core.passes.validation import validate
 from core.version import MCU_VERSION
+
+
+def _env_coarsening_factor():
+    value = os.environ.get("MCU_COARSENING")
+    if value in {None, ""}:
+        return None
+    try:
+        return {"factor": int(value), "strict": False}
+    except ValueError:
+        return value
 
 
 def execute_compile(project_root, arguments, artifact_path="mcu_artifacts.zip"):
@@ -56,6 +66,15 @@ def execute_invocation(project_root, invocation, command="compile", artifact_pat
                     item for item in semantic.diagnostics
                     if item.get("severity") == "error"
                 )
+                if os.environ.get("MCU_SEMANTIC_STRICT", "0") == "1":
+                    diagnostics.append({
+                        "code": "SemanticFrontendRequired",
+                        "severity": "error",
+                        "message": "MCU_SEMANTIC_STRICT=1 requires complete libclang semantic IR; regex fallback is disabled.",
+                        "file": None,
+                        "line": None,
+                        "column": None,
+                    })
         if any(item.get("severity") == "error" for item in diagnostics):
             return CommandResult(1, {
                 "ok": False,
@@ -144,6 +163,7 @@ def execute_invocation(project_root, invocation, command="compile", artifact_pat
         native=True,
         output=sidecar,
         executable=output,
+        coarsening=_env_coarsening_factor(),
         include_paths=_stable_unique([*invocation.include_paths, *contexts["include_paths"]]),
         definitions=_stable_unique([*invocation.definitions, *contexts["definitions"]]),
         undefinitions=_stable_unique([*invocation.undefinitions, *contexts["undefinitions"]]),

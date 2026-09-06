@@ -1,0 +1,16 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '''
+/(\.git|\.venv|__pycache__|build|dist|initial_testing)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["core", "cli", "runtime", "scripts"]
+skip_glob = ["initial_testing/*", ".venv/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

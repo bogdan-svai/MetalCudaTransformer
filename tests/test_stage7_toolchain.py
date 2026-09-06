@@ -1,17 +1,41 @@
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+from core.build.native import _stable_routing_for_cache
 
 ROOT = Path(__file__).resolve().parents[1]
 MCU = ROOT / "mcu"
 NUMERIC = ROOT / "examples" / "stage4_numeric" / "main.cu"
+
+
+def test_native_cache_key_ignores_volatile_optimizer_timings():
+    first = {
+        "routing_table": {
+            "schema_version": 2,
+            "metal_optimization": {
+                "passes": [{"name": "unroll", "details": {"timing_ms": 0.1}}],
+                "analysis": {"optimization_total_ms": 0.2, "register_pressure": 4},
+            },
+        }
+    }
+    second = {
+        "routing_table": {
+            "schema_version": 2,
+            "metal_optimization": {
+                "passes": [{"name": "unroll", "details": {"timing_ms": 9.9}}],
+                "analysis": {"optimization_total_ms": 12.0, "register_pressure": 4},
+            },
+        }
+    }
+
+    assert _stable_routing_for_cache(first) == _stable_routing_for_cache(second)
 
 
 def _run(arguments, cwd, cache):
@@ -55,7 +79,9 @@ def test_compile_only_emits_mcu_object_and_depfile(tmp_path):
     assert object_payload["target"]["architecture"]
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="Stage 7 run requires the native toolchain")
+@pytest.mark.skipif(
+    platform.system() != "Darwin", reason="Stage 7 run requires the native toolchain"
+)
 def test_mcu_run_forwards_program_arguments_and_exit_status(tmp_path):
     source = tmp_path / "arguments.cu"
     source.write_text(
@@ -93,7 +119,9 @@ int main(int argc, char** argv) {
     assert failed_payload["program"]["exit_code"] == 7
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="Stage 7 native toolchain requires Xcode and Metal")
+@pytest.mark.skipif(
+    platform.system() != "Darwin", reason="Stage 7 native toolchain requires Xcode and Metal"
+)
 def test_compile_links_metallib_runs_without_msl_and_hits_noop_cache(tmp_path):
     cache = tmp_path / "cache"
     object_path = tmp_path / "numeric.o"
@@ -129,7 +157,9 @@ def test_compile_links_metallib_runs_without_msl_and_hits_noop_cache(tmp_path):
     relocated.mkdir()
     relocated_executable = Path(shutil.move(executable, relocated / executable.name))
     shutil.move(sidecar, Path(f"{relocated_executable}.mcu"))
-    executed = subprocess.run([str(relocated_executable)], text=True, capture_output=True, check=False)
+    executed = subprocess.run(
+        [str(relocated_executable)], text=True, capture_output=True, check=False
+    )
     assert executed.returncode == 0, executed.stderr
     assert "numeric_count=100000 max_error=0" in executed.stdout
 

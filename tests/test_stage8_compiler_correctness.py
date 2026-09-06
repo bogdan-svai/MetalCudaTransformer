@@ -67,6 +67,561 @@ __global__ void kernel(int* output) { output[0] = clear_local(); }
     assert "inline thread T* mcu_device_memset" in metal
 
 
+def test_readonly_literal_arrays_are_marked_const_in_metal(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__device__ unsigned int pick(int index) {
+    unsigned int k[4] = {1, 2, 3, 4};
+    unsigned int m[4] = {0, 0, 0, 0};
+    m[index & 3] = k[index & 3];
+    return m[index & 3];
+}
+__global__ void kernel(unsigned int* output) { output[0] = pick(2); }
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "const unsigned int k[4] = {1, 2, 3, 4};" in metal
+    assert "unsigned int m[4] = {0, 0, 0, 0};" in metal
+
+
+def test_large_literal_constant_arrays_are_promoted_and_deduplicated(tmp_path):
+    values = ", ".join(str(index) for index in range(16))
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        f"""__device__ unsigned int first(int index) {{
+    const unsigned int table[16] = {{{values}}};
+    return table[index & 15];
+}}
+__device__ unsigned int second(int index) {{
+    const unsigned int values[16] = {{{values}}};
+    return values[index & 15];
+}}
+__global__ void kernel(unsigned int* output) {{
+    output[0] = first(3) + second(4);
+}}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "const unsigned int table[16]" not in metal
+    assert "const unsigned int values[16]" not in metal
+    assert metal.count("constant unsigned int mcu_const_") == 1
+    promotion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "promote_literal_constant_arrays"
+    )
+    assert promotion["replacements"] == 2
+    assert promotion["details"]["unique_tables"] == 1
+    assert promotion["details"]["local_bytes_removed"] == 128
+
+
+def test_readonly_nonconst_literal_table_is_promoted(tmp_path):
+    values = ", ".join(str(index) for index in range(64))
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        f"""__global__ void kernel(unsigned int* output, int index) {{
+    unsigned int table[64] = {{{values}}};
+    output[0] = table[index & 63];
+}}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "unsigned int table[64]" not in metal
+    assert "constant unsigned int mcu_const_" in metal
+    promotion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "promote_literal_constant_arrays"
+    )
+    assert promotion["replacements"] == 1
+    assert promotion["details"]["local_bytes_removed"] == 256
+
+
+def test_promoted_constant_is_emitted_after_its_type_alias(tmp_path):
+    values = ", ".join(str(index) + "u" for index in range(16))
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        f"""typedef unsigned int WORD;
+__device__ WORD pick(int index) {{
+    const WORD table[16] = {{{values}}};
+    return table[index & 15];
+}}
+__global__ void kernel(WORD* output) {{ output[0] = pick(3); }}
+""",
+    )
+
+    metal = generated["metal_source"]
+    constant_position = metal.index("constant WORD mcu_const_")
+    assert metal.index("typedef uint WORD;") < constant_position
+    assert constant_position < metal.index("inline ", constant_position)
+
+
+def test_promoted_constant_does_not_split_template_from_function():
+    from core.passes.metal_optimizer import promote_literal_constant_arrays
+
+    values = ", ".join(str(index) for index in range(16))
+    source = f"""typedef uint WORD;
+template <typename T>
+inline thread T* helper(thread T* value) {{ return value; }}
+inline WORD pick(int index) {{
+    WORD table[16] = {{{values}}};
+    return table[index & 15];
+}}
+"""
+
+    metal, report = promote_literal_constant_arrays(source)
+
+    assert report.replacements == 1
+    assert metal.index("constant WORD mcu_const_") < metal.index("template <typename T>")
+    assert "template <typename T>\ninline thread T* helper" in metal
+
+
+def test_literal_constant_promotion_rejects_small_and_symbolic_tables(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """#define VALUE 7
+__global__ void kernel(unsigned int* output, int index) {
+    const unsigned int small[4] = {1, 2, 3, 4};
+    const unsigned int symbolic[16] = {
+        VALUE, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    };
+    output[0] = small[index & 3] + symbolic[index & 15];
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "const unsigned int small[4]" in metal
+    assert "const unsigned int symbolic[16]" in metal
+    promotion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "promote_literal_constant_arrays"
+    )
+    assert promotion["replacements"] == 0
+
+
+def test_rotate_macros_use_metal_intrinsics(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """#define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
+__device__ unsigned int rotate_word(unsigned int value) {
+    return ROTRIGHT(value, 7);
+}
+__global__ void kernel(unsigned int* output) { output[0] = rotate_word(5); }
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "#define ROTRIGHT(a,b) rotate((a), uint(32 - (b)))" in metal
+
+
+def test_small_static_loops_are_unrolled_in_metal(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__device__ int sum4() {
+    int total = 0;
+    for (int i = 0; i < 4; ++i) {
+        total += i;
+    }
+    return total;
+}
+__global__ void kernel(int* output) { output[0] = sum4(); }
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "for (int i = 0; i < 4; ++i)" not in metal
+    assert "total += 0;" in metal
+    assert "total += 3;" in metal
+    report = generated["optimization_report"]
+    unroll = next(item for item in report["passes"] if item["name"] == "unroll_small_static_loops")
+    assert unroll["replacements"] == 1
+    assert unroll["details"]["unrolled_iterations"] == 4
+
+
+def test_static_loop_unroll_limit_can_be_tuned_for_benchmarking(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_UNROLL_MAX", "16")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output) {
+    for (int i = 0; i < 16; ++i) {
+        output[i] = i;
+    }
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "for (int i = 0; i < 16; ++i)" not in metal
+    unroll = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "unroll_small_static_loops"
+    )
+    assert unroll["details"]["max_iterations"] == 16
+    assert unroll["details"]["unrolled_iterations"] == 16
+
+
+def test_metal_optimization_report_includes_local_memory_pressure(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output) {
+    int value, local[8];
+    local[threadIdx.x & 7] = 1;
+    output[threadIdx.x] = local[threadIdx.x & 7];
+}
+""",
+    )
+
+    report = generated["optimization_report"]
+    local_memory = report["analysis"]["local_memory"]
+    assert local_memory["max_estimated_bytes_per_thread"] >= 32
+    assert local_memory["functions"][0]["function"] == "kernel_msl"
+    assert local_memory["functions"][0]["arrays"][0]["name"] == "local"
+    assert generated["routing_table"]["metal_optimization"] == report
+
+
+def test_small_constant_index_arrays_are_scalarized_after_unroll(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output) {
+    int local[4];
+    for (int i = 0; i < 4; ++i) {
+        local[i] = i + 1;
+    }
+    output[0] = local[0] + local[3];
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "int local[4]" not in metal
+    assert "int local_0;" in metal
+    assert "local_0 = 0 + 1;" in metal
+    assert "output[0] = local_0 + local_3;" in metal
+    scalarize = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "scalarize_small_constant_index_arrays"
+    )
+    assert scalarize["replacements"] == 1
+    assert scalarize["details"]["scalar_variables"] == 4
+
+
+def test_dynamic_index_arrays_are_not_scalarized(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output, int index) {
+    int local[4];
+    local[index & 3] = 7;
+    output[0] = local[index & 3];
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "int local[4]" in metal
+    scalarize = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "scalarize_small_constant_index_arrays"
+    )
+    assert scalarize["replacements"] == 0
+
+
+def test_dynamic_recurrence_arrays_are_reported_as_sliding_window_candidates(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_RECURRENCE_FUSION", "0")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(unsigned int* output) {
+    unsigned int buffer[32];
+    for (unsigned int i = 16; i < 32; ++i) {
+        buffer[i] = buffer[i - 2] + buffer[i - 7] + buffer[i - 16];
+    }
+    for (unsigned int i = 0; i < 32; ++i) {
+        output[i] = buffer[i];
+    }
+}
+""",
+    )
+
+    candidates = generated["optimization_report"]["analysis"]["dynamic_array_candidates"]["candidates"]
+    buffer = next(item for item in candidates if item["array"] == "buffer")
+    assert buffer["recurrence"]["index_variable"] == "i"
+    assert buffer["recurrence"]["distances"] == [2, 7, 16]
+    assert buffer["sliding_window_elements"] == 16
+    assert buffer["sliding_window_bytes_saved"] == 64
+    assert buffer["requires_loop_fusion"] is True
+
+
+def test_register_pressure_analysis_exposes_general_cost_signal(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_RECURRENCE_FUSION", "0")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output, int index) {
+    int values[128];
+    for (int i = 0; i < 128; ++i) values[i] = i + index;
+    output[index & 3] = values[index & 127];
+}
+""",
+    )
+
+    functions = generated["optimization_report"]["analysis"]["register_pressure"]["functions"]
+    summary = next(item for item in functions if item["function"] == "kernel_msl")
+    assert summary["estimated_local_bytes"] == 512
+    assert summary["dynamic_array_accesses"] >= 2
+    assert summary["risk"] == "high"
+
+
+def test_predicate_materialization_candidates_are_reported_generically(tmp_path, monkeypatch):
+    from core.passes.metal_optimizer import analyze_predicate_materialization
+    source = """inline void kernel_msl() {
+    int value[32];
+    produce(value);
+    if (accept(value)) output[0] = 1;
+}
+"""
+    candidates = analyze_predicate_materialization(source)["candidates"]
+    assert any(item["buffer"] == "value" and item["producer"] == "produce" for item in candidates)
+
+
+def test_semantic_ir_collects_ast_effect_summary(tmp_path):
+    project, _plan, _generated = _semantic_build(
+        tmp_path,
+        """__device__ int pure_add(int a, int b) { return a + b; }
+__device__ void write_value(int* output) { output[0] = 7; }
+__global__ void kernel(int* output) {
+    output[0] = pure_add(2, 3);
+    write_value(output);
+}
+""",
+    )
+
+    pure = next(item for item in project.functions.values() if item.name == "pure_add")
+    writer = next(item for item in project.functions.values() if item.name == "write_value")
+    assert pure.effects["pure"] is True
+    assert writer.effects["writes_memory"] is True
+    assert writer.effects["writes_parameters"] == ["output"]
+    assert "write_value" in next(item for item in project.functions.values() if item.name == "kernel").effects["calls"]
+
+
+def test_semantic_ir_propagates_effects_through_call_graph(tmp_path):
+    project, _plan, _generated = _semantic_build(
+        tmp_path,
+        """__device__ void write_value(int* output) { output[0] = 7; }
+__device__ void wrapper(int* output) { write_value(output); }
+__global__ void kernel(int* output) { wrapper(output); }
+""",
+    )
+
+    wrapper = next(item for item in project.functions.values() if item.name == "wrapper")
+    kernel = next(item for item in project.functions.values() if item.name == "kernel")
+    assert wrapper.effects["writes_memory"] is True
+    assert wrapper.effects["pure"] is False
+    assert "write_value" in wrapper.effects["propagated_impure_calls"]
+    assert wrapper.effects["writes_parameters"] == ["output"]
+    assert kernel.effects["pure"] is False
+    assert "wrapper" in kernel.effects["propagated_impure_calls"]
+    assert kernel.effects["writes_parameters"] == ["output"]
+
+
+def test_semantic_ir_retains_typed_statement_structure(tmp_path):
+    project, _plan, _generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* output) {
+    for (int i = 0; i < 4; ++i) {
+        if (i > 1) output[i] = i;
+    }
+}
+""",
+    )
+
+    kernel = next(item for item in project.functions.values() if item.name == "kernel")
+    kinds = [item.kind for item in kernel.statements]
+    assert "FOR_STMT" in kinds
+    assert "IF_STMT" in kinds
+    loop = next(item for item in kernel.statements if item.kind == "FOR_STMT")
+    assert loop.source.line is not None
+    assert "i < 4" in loop.text
+
+
+def test_semantic_ir_tracks_alias_when_helper_writes_through_local_pointer(tmp_path):
+    project, _plan, _generated = _semantic_build(
+        tmp_path,
+        """__device__ void store(int* output, int value) { output[0] = value; }
+__device__ void wrapper(int* output) { int* alias = output; store(alias, 9); }
+__global__ void kernel(int* output) { wrapper(output); }
+""",
+    )
+
+    wrapper = next(item for item in project.functions.values() if item.name == "wrapper")
+    # The call target and the local pointer alias are both resolved from AST.
+    assert "store" in wrapper.effects["propagated_impure_calls"]
+    assert wrapper.effects["pointer_aliases"]["alias"] == "output"
+    assert "output" in wrapper.effects["writes_argument_symbols"]
+    assert wrapper.effects["writes_memory"] is True
+
+
+def test_unbraced_recurrence_loop_is_fused_into_consumer_loop(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_RECURRENCE_FUSION", "1")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(unsigned int* output) {
+    unsigned int value, i, j, buffer[32];
+    for (i = 0, j = 0; i < 16; ++i, j += 1)
+    buffer[i] = j;
+    for ( ; i < 32; ++i)
+    buffer[i] = buffer[i - 2] + buffer[i - 7] + buffer[i - 16];
+    for (i = 0; i < 32; ++i) {
+    value = buffer[i];
+    output[i] = value;
+    }
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "buffer[16]" in metal
+    assert "buffer[32]" not in metal
+    assert "if (i >= 16)" in metal
+    assert "buffer[i & 15] = buffer[(i - 2) & 15]" in metal
+    assert "value = buffer[i & 15];" in metal
+    fusion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "fuse_recurrent_array_consumers"
+    )
+    assert fusion["replacements"] == 1
+    assert fusion["details"]["bytes_saved"] == 64
+
+
+def test_braced_recurrence_with_temporaries_is_fused_into_typed_consumer(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_RECURRENCE_FUSION", "1")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(unsigned int* output) {
+    unsigned int buffer[32];
+    for (unsigned int i = 0; i < 16; ++i) {
+        buffer[i] = i;
+    }
+    for (unsigned int i = 16; i < 32; ++i) {
+        unsigned int x = buffer[i - 15];
+        unsigned int y = buffer[i - 2];
+        buffer[i] = buffer[i - 16] + x + buffer[i - 7] + y;
+    }
+    unsigned int accumulator = 7;
+    for (unsigned int i = 0; i < 32; ++i) {
+        accumulator += buffer[i];
+        output[i] = accumulator;
+    }
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "buffer[16]" in metal
+    assert "buffer[32]" not in metal
+    assert "if (i >= 16)" in metal
+    assert "unsigned int x = buffer[(i - 15) & 15];" in metal
+    assert "buffer[i & 15] = buffer[(i - 16) & 15]" in metal
+    assert "unsigned int accumulator = 7;" in metal
+    assert "for (unsigned int i = 16; i < 32; ++i)" not in metal
+    fusion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "fuse_recurrent_array_consumers"
+    )
+    assert fusion["replacements"] == 1
+    assert fusion["details"]["bytes_saved"] == 64
+
+
+def test_braced_recurrence_with_unsafe_array_index_is_not_fused(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_METAL_RECURRENCE_FUSION", "1")
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(unsigned int* output, unsigned int other) {
+    unsigned int buffer[32];
+    for (unsigned int i = 16; i < 32; ++i) {
+        unsigned int x = buffer[other];
+        buffer[i] = buffer[i - 16] + x;
+    }
+    for (unsigned int i = 0; i < 32; ++i) {
+        output[i] = buffer[i];
+    }
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "buffer[32]" in metal
+    fusion = next(
+        item for item in generated["optimization_report"]["passes"]
+        if item["name"] == "fuse_recurrent_array_consumers"
+    )
+    assert fusion["replacements"] == 0
+
+
+def test_readonly_pointer_parameters_are_const_in_metal(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* input, int* output) {
+    int idx = threadIdx.x;
+    output[idx] = input[idx] + 1;
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "const device int* input [[buffer(0)]]" in metal
+    assert "device int* output [[buffer(1)]]" in metal
+
+
+def test_readonly_device_helper_pointer_parameters_are_const_in_metal(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__device__ int pick(int* input, int index) {
+    return input[index];
+}
+__global__ void kernel(int* input, int* output) {
+    int idx = threadIdx.x;
+    output[idx] = pick(input, idx);
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "const device int* input" in metal
+    assert "device int* input [[buffer(0)]]" in metal
+
+
+def test_pointer_parameters_with_field_writes_stay_mutable(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """struct Box { int value; };
+__device__ void reset(Box* box) {
+    box->value = 0;
+}
+__global__ void kernel(Box* box) { reset(box); }
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "inline void reset" in metal
+    assert "device Box* box" in metal
+    assert "const device Box* box" not in metal
+
+
+def test_pointer_parameters_with_mutable_derived_pointers_stay_mutable(tmp_path):
+    _project, _plan, generated = _semantic_build(
+        tmp_path,
+        """__global__ void kernel(int* input, int* output) {
+    int idx = threadIdx.x;
+    int* current = input + idx;
+    output[idx] = *current;
+}
+""",
+    )
+
+    metal = generated["metal_source"]
+    assert "device int* input [[buffer(0)]]" in metal
+
+
 def test_nvcc_link_accepts_libraries_and_rejects_them_during_compile(tmp_path):
     source = tmp_path / "main.cu"
     source.write_text("int main() { return 0; }\n", encoding="ascii")

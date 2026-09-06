@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -45,17 +46,30 @@ def summary(values):
     }
 
 
-def json_command(arguments, cwd=None):
-    result, elapsed = run([sys.executable, str(MCU), *arguments, "--json"], cwd=cwd)
+def json_command(arguments, cwd=None, env=None):
+    result, elapsed = run([sys.executable, str(MCU), *arguments, "--json"], cwd=cwd, env=env)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
     return json.loads(result.stdout), elapsed
 
 
-def verify(samples):
+def configure_find_nonce_geometry(project, grid, block):
+    main_source = project / "app" / "main.cpp"
+    source = main_source.read_text(encoding="utf-8")
+    replacement = f"find_nonce<<<{grid}, {block}>>>"
+    pattern = re.compile(r"find_nonce\s*<<<\s*\d+\s*,\s*\d+\s*>>>")
+    if len(pattern.findall(source)) != 1:
+        raise RuntimeError("Stage 9 find_nonce launch shape was not found exactly once")
+    main_source.write_text(pattern.sub(replacement, source), encoding="utf-8")
+
+
+def verify(samples, find_nonce_grid=4096, find_nonce_block=128):
     with tempfile.TemporaryDirectory(prefix="mcu-stage9-") as temporary:
         project = Path(temporary) / "project"
         shutil.copytree(FIXTURE, project)
+        configure_find_nonce_geometry(project, find_nonce_grid, find_nonce_block)
+        environment = os.environ.copy()
+        environment.setdefault("MCU_CACHE_DIR", str(Path(temporary) / "cache"))
         expected_by_input = {}
         for input_path in sorted((project / "inputs").glob("*.in")):
             relative = str(input_path.relative_to(project))
@@ -64,7 +78,10 @@ def verify(samples):
                 raise RuntimeError(oracle_result.stderr)
             expected_by_input[relative] = fields(oracle_result.stdout)
 
-        clean_payload, clean_seconds = json_command(["make", "-C", str(project), "clean", "compile"])
+        clean_payload, clean_seconds = json_command(
+            ["make", "-C", str(project), "clean", "compile"],
+            env=environment,
+        )
         executable = project / "miner"
         if not executable.is_file():
             raise RuntimeError("Stage 9 Make build did not produce miner")
@@ -72,13 +89,16 @@ def verify(samples):
         no_op = []
         no_op_payloads = []
         for _ in range(samples):
-            payload, elapsed = json_command(["make", "-C", str(project), "compile"])
+            payload, elapsed = json_command(["make", "-C", str(project), "compile"], env=environment)
             no_op.append(elapsed)
             no_op_payloads.append(payload)
 
         kernels = project / "src" / "kernels.cu"
         kernels.write_text(kernels.read_text(encoding="ascii") + "\n", encoding="ascii")
-        incremental_payload, incremental_seconds = json_command(["make", "-C", str(project), "compile"])
+        incremental_payload, incremental_seconds = json_command(
+            ["make", "-C", str(project), "compile"],
+            env=environment,
+        )
 
         runtime_by_input = {}
         all_metrics = []
@@ -89,9 +109,9 @@ def verify(samples):
             observed = []
             for index in range(samples):
                 metric_path = project / f"runtime-{Path(input_name).stem}-{index}.json"
-                environment = os.environ.copy()
-                environment["MCU_METRICS_FILE"] = str(metric_path)
-                result, elapsed = run([str(executable), input_name], cwd=project, env=environment)
+                run_environment = environment.copy()
+                run_environment["MCU_METRICS_FILE"] = str(metric_path)
+                result, elapsed = run([str(executable), input_name], cwd=project, env=run_environment)
                 if result.returncode != 0:
                     raise RuntimeError(result.stderr or result.stdout)
                 actual = fields(result.stdout)
@@ -134,6 +154,11 @@ def verify(samples):
                 "runs_per_input": samples,
                 "deterministic": deterministic,
             },
+            "benchmark_parameters": {
+                "find_nonce_grid": find_nonce_grid,
+                "find_nonce_block": find_nonce_block,
+                "find_nonce_threads": find_nonce_grid * find_nonce_block,
+            },
             "build": {
                 "clean_seconds": round(clean_seconds, 6),
                 "clean_driver_invocations": clean_payload["make"]["driver_invocations"],
@@ -164,10 +189,14 @@ def main():
     parser = argparse.ArgumentParser(description="Verify the MCU Stage 9 project contract")
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--find-nonce-grid", type=int, default=4096)
+    parser.add_argument("--find-nonce-block", type=int, default=128)
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("Stage 9 native verification requires macOS Metal")
-    report = verify(max(1, args.samples))
+    if args.find_nonce_grid < 1 or args.find_nonce_block < 1 or args.find_nonce_block > 1024:
+        parser.error("find_nonce geometry requires grid >= 1 and block in [1, 1024]")
+    report = verify(max(1, args.samples), args.find_nonce_grid, args.find_nonce_block)
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(payload, encoding="utf-8")

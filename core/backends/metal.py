@@ -1,11 +1,22 @@
 import json
 import re
 
+from core.backends.device import (
+    readonly_pointer_parameters,
+    render_device_components,
+    rewrite_kernel_calls,
+)
 from core.ir.models import BindingIR, KernelRouteIR
 from core.ir.symbols import manifest_text
-from core.backends.device import render_device_components, rewrite_kernel_calls
+from core.passes.ir_optimization import (
+    analyze_global_memory_accesses,
+    analyze_loop_invariant_inputs,
+    analyze_recurrent_arrays,
+    analyze_scalarizable_arrays,
+    analyze_static_loops,
+)
+from core.passes.metal_optimizer import optimize_metal_source
 from core.registry.catalog import default_registry
-
 
 GEOMETRY_ARGUMENTS = [
     "uint3 thread_position_in_grid [[thread_position_in_grid]]",
@@ -32,17 +43,15 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
     for kernel in kernels:
         optimization = coarsening_plans.get(kernel["name"], default_optimization())
         entry_point = f"{kernel['name']}_msl"
-        semantic_kernels = semantic_project.functions_named(kernel["name"]) if semantic_project else []
+        semantic_kernels = (
+            semantic_project.functions_named(kernel["name"]) if semantic_project else []
+        )
         semantic_kernel = next((item for item in semantic_kernels if item.kind == "KERNEL"), None)
         atomic_parameters = (
             link_plan.atomic_parameters.get(semantic_kernel.symbol_id, {})
-            if semantic_kernel and link_plan else {}
+            if semantic_kernel and link_plan
+            else {}
         )
-        parameters, bindings = translate_parameters(
-            kernel.get("parameters", []),
-            atomic_parameters=atomic_parameters,
-        )
-        signature_parameters = parameters + GEOMETRY_ARGUMENTS
         source = {
             "file": kernel.get("file"),
             "line": kernel.get("body_line") or kernel.get("line"),
@@ -53,12 +62,29 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
             raw_body = rewrite_kernel_calls(raw_body, semantic_kernel, link_plan)
         atomic_locals = (
             link_plan.atomic_locals.get(semantic_kernel.symbol_id, {})
-            if semantic_kernel and link_plan else {}
+            if semantic_kernel and link_plan
+            else {}
         )
         raw_body, shared_parameter, shared_descriptor = translate_shared_memory(
             raw_body,
             atomic_locals,
         )
+        readonly_parameters = (
+            readonly_pointer_parameters(
+                semantic_kernel.parameters,
+                raw_body,
+                atomic_parameters,
+                effects=semantic_kernel.effects,
+            )
+            if semantic_kernel
+            else set()
+        )
+        parameters, bindings = translate_parameters(
+            kernel.get("parameters", []),
+            atomic_parameters=atomic_parameters,
+            readonly_parameters=readonly_parameters,
+        )
+        signature_parameters = parameters + GEOMETRY_ARGUMENTS
         if shared_parameter:
             signature_parameters.append(shared_parameter)
         body = mutate_body(
@@ -66,12 +92,14 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
             coarsening_factor=factor,
             source=source if factor > 1 else None,
         )
-        metal_functions.append(render_kernel(
-            entry_point,
-            signature_parameters,
-            body,
-            source if factor == 1 else None,
-        ))
+        metal_functions.append(
+            render_kernel(
+                entry_point,
+                signature_parameters,
+                body,
+                source if factor == 1 else None,
+            )
+        )
         route = KernelRouteIR(
             msl_entry_point=entry_point,
             bindings=bindings,
@@ -83,13 +111,30 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
         translated[kernel["name"]] = route
 
     metal_source = render_metal_source(metal_functions, declarations=declarations, helpers=helpers)
+    ir_analysis = (
+        {
+            "static_loops": analyze_static_loops(semantic_project),
+            "scalarizable_arrays": analyze_scalarizable_arrays(semantic_project),
+            "recurrent_arrays": analyze_recurrent_arrays(semantic_project),
+            "global_memory_accesses": analyze_global_memory_accesses(semantic_project),
+            "loop_invariant_inputs": analyze_loop_invariant_inputs(semantic_project),
+        }
+        if semantic_project
+        else None
+    )
+    optimization_result = optimize_metal_source(metal_source, ir_analysis=ir_analysis)
+    metal_source = optimization_result.source
     routing_table = {
         "schema_version": 2,
         "library_adapters": [],
+        "metal_optimization": optimization_result.to_dict(),
         "translated_kernels": translated,
     }
+    if ir_analysis:
+        routing_table["ir_optimization"] = ir_analysis
     result = {
         "metal_source": metal_source,
+        "optimization_report": optimization_result.to_dict(),
         "routing_table": routing_table,
         "routing_table_text": json.dumps(routing_table, indent=2, sort_keys=True),
     }
@@ -100,8 +145,9 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
     return result
 
 
-def translate_parameters(parameters, atomic_parameters=None):
+def translate_parameters(parameters, atomic_parameters=None, readonly_parameters=None):
     atomic_parameters = atomic_parameters or {}
+    readonly_parameters = readonly_parameters or set()
     translated = []
     bindings = []
     for index, parameter in enumerate(parameters):
@@ -111,18 +157,29 @@ def translate_parameters(parameters, atomic_parameters=None):
         if parsed["is_pointer"]:
             atomic_type = atomic_parameters.get(parsed["identifier"], {}).get("type")
             parameter_type = f"{atomic_type}*" if atomic_type else parsed["type"]
-            msl_param = f"device {parameter_type} {parsed['identifier']} [[{binding_target}]]"
+            const_prefix = (
+                "const "
+                if not atomic_type
+                and parsed["identifier"] in readonly_parameters
+                and not parameter_type.strip().startswith("const ")
+                else ""
+            )
+            msl_param = (
+                f"{const_prefix}device {parameter_type} {parsed['identifier']} [[{binding_target}]]"
+            )
         else:
             msl_param = f"constant {parsed['type']}& {parsed['identifier']} [[{binding_target}]]"
         translated.append(msl_param)
-        bindings.append(BindingIR(
-            argument_index=index,
-            identifier=parsed["identifier"],
-            type=parsed["type"],
-            buffer_index=index,
-            kind="buffer" if parsed["is_pointer"] else "scalar",
-            space=space,
-        ))
+        bindings.append(
+            BindingIR(
+                argument_index=index,
+                identifier=parsed["identifier"],
+                type=parsed["type"],
+                buffer_index=index,
+                kind="buffer" if parsed["is_pointer"] else "scalar",
+                space=space,
+            )
+        )
     return translated, bindings
 
 
@@ -168,7 +225,7 @@ def translate_shared_memory(body, atomic_locals=None):
             "element_type": type_name,
             "alignment": _type_alignment(type_name),
         }
-        body = body[:dynamic.start()] + body[dynamic.end():]
+        body = body[: dynamic.start()] + body[dynamic.end() :]
     body = re.sub(r"\b__shared__\b", "threadgroup", body)
     for name, use in atomic_locals.items():
         atomic_type = use["type"]
@@ -230,22 +287,24 @@ def mutate_body(body, coarsening_factor=1, source=None):
 def render_coarsened_body(body, factor, source=None):
     inner = indent_lines(body, 1)
     source_directive = render_line_directive(source)
-    return "\n".join([
-        f"for (uint mcu_step = 0; mcu_step < {factor}; ++mcu_step) {{",
-        "    uint3 mcu_thread_idx = uint3(",
-        "        thread_position_in_threadgroup.x + mcu_step * threads_per_threadgroup.x,",
-        "        thread_position_in_threadgroup.y,",
-        "        thread_position_in_threadgroup.z",
-        "    );",
-        "    uint3 mcu_block_dim = uint3(",
-        f"        threads_per_threadgroup.x * {factor},",
-        "        threads_per_threadgroup.y,",
-        "        threads_per_threadgroup.z",
-        "    );",
-        source_directive,
-        inner,
-        "}",
-    ])
+    return "\n".join(
+        [
+            f"for (uint mcu_step = 0; mcu_step < {factor}; ++mcu_step) {{",
+            "    uint3 mcu_thread_idx = uint3(",
+            "        thread_position_in_threadgroup.x + mcu_step * threads_per_threadgroup.x,",
+            "        thread_position_in_threadgroup.y,",
+            "        thread_position_in_threadgroup.z",
+            "    );",
+            "    uint3 mcu_block_dim = uint3(",
+            f"        threads_per_threadgroup.x * {factor},",
+            "        threads_per_threadgroup.y,",
+            "        threads_per_threadgroup.z",
+            "    );",
+            source_directive,
+            inner,
+            "}",
+        ]
+    )
 
 
 def render_kernel(entry_point, parameters, body, source=None):
@@ -254,7 +313,9 @@ def render_kernel(entry_point, parameters, body, source=None):
     source_directive = ""
     if source and source.get("file") and source.get("line"):
         source_directive = "\n" + render_line_directive(source)
-    return f"kernel void {entry_point}(\n    {formatted_params}\n) {{{source_directive}{body_text}\n}}"
+    return (
+        f"kernel void {entry_point}(\n    {formatted_params}\n) {{{source_directive}{body_text}\n}}"
+    )
 
 
 def render_line_directive(source):

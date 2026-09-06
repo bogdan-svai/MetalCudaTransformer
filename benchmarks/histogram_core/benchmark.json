@@ -1,0 +1,18 @@
+{
+  "id": "histogram_core",
+  "name": "CUDA Core atomic histogram",
+  "category": "global_atomic_contention",
+  "source": "main.cu",
+  "default_elements": 8388608,
+  "default_iterations": 10,
+  "default_blocks": 512,
+  "contention_profiles": {
+    "high": 16,
+    "medium": 256,
+    "low": 4096
+  },
+  "provenance": {
+    "classification": "mcu_core_workload",
+    "external_dependencies": []
+  }
+}

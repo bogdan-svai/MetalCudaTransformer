@@ -1,0 +1,20 @@
+{
+  "id": "babelstream_core",
+  "name": "BabelStream-derived CUDA Core STREAM",
+  "category": "memory_bandwidth",
+  "source": "main.cu",
+  "default_elements": 8388608,
+  "default_iterations": 20,
+  "operations": {
+    "stream_copy": 2,
+    "stream_mul": 2,
+    "stream_add": 3,
+    "stream_triad": 3
+  },
+  "provenance": {
+    "upstream": "https://github.com/UoB-HPC/BabelStream",
+    "reference_version": "v5.0",
+    "classification": "derived_compatibility_variant",
+    "official_babelstream_result": false
+  }
+}

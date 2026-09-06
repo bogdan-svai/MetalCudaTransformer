@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     cudaMemcpy(root, device_a, sizeof(root), cudaMemcpyDeviceToHost);
     WORD nonce = UINT_MAX;
     cudaMemcpy(device_nonce, &nonce, sizeof(nonce), cudaMemcpyHostToDevice);
-    find_nonce<<<32, 128>>>(device_a, nonce_limit, device_nonce);
+    find_nonce<<<4096, 128>>>(device_a, nonce_limit, device_nonce);
     cudaMemcpy(&nonce, device_nonce, sizeof(nonce), cudaMemcpyDeviceToHost);
     if (nonce == UINT_MAX) return 20;
     hash_block<<<1, 1>>>(device_a, nonce, device_block_hash);

@@ -4,9 +4,18 @@ import sys
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MCU = ROOT / "mcu"
+
+
+def test_source_cache_invalidates_after_file_change(tmp_path):
+    from core.frontend.regex_parser import read_text
+
+    source = tmp_path / "cached.cu"
+    source.write_text("first", encoding="utf-8")
+    assert read_text(source) == "first"
+    source.write_text("second-value", encoding="utf-8")
+    assert read_text(source) == "second-value"
 
 
 def run_mcu(tmp_path, source, *args):

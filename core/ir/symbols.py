@@ -1,7 +1,6 @@
-from dataclasses import dataclass, field
 import hashlib
 import json
-
+from dataclasses import dataclass, field
 
 DEVICE_KINDS = {"KERNEL", "DEVICE_FUNC", "HOST_DEVICE_FUNC"}
 
@@ -87,6 +86,26 @@ class LocalObjectIR:
         }
 
 
+@dataclass(frozen=True)
+class StatementIR:
+    """Typed AST statement retained for later lowering and optimization passes."""
+
+    kind: str
+    source: SourceLocationIR
+    text: str
+    children: tuple[str, ...] = tuple()
+    attributes: dict = field(default_factory=dict)
+
+    def to_dict(self):
+        return {
+            "kind": self.kind,
+            "source": self.source.to_dict(),
+            "text": self.text,
+            "children": list(self.children),
+            "attributes": self.attributes,
+        }
+
+
 @dataclass
 class FunctionSymbolIR:
     symbol_id: str
@@ -101,6 +120,8 @@ class FunctionSymbolIR:
     translation_unit: str
     calls: list[CallEdgeIR] = field(default_factory=list)
     local_objects: list[LocalObjectIR] = field(default_factory=list)
+    statements: list[StatementIR] = field(default_factory=list)
+    effects: dict = field(default_factory=dict)
 
     @property
     def is_device_callable(self):
@@ -119,6 +140,8 @@ class FunctionSymbolIR:
             "translation_unit": self.translation_unit,
             "calls": [call.to_dict() for call in self.calls],
             "local_objects": [item.to_dict() for item in self.local_objects],
+            "statements": [item.to_dict() for item in self.statements],
+            "effects": self.effects,
         }
 
 
@@ -181,9 +204,17 @@ class ProjectSymbolIR:
     types: dict[str, TypeDeclarationIR] = field(default_factory=dict)
     macros: dict[str, MacroIR] = field(default_factory=dict)
     diagnostics: list[dict] = field(default_factory=list)
+    _name_index: dict[str, list[FunctionSymbolIR]] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def functions_named(self, name):
-        return [function for function in self.functions.values() if function.name == name]
+        if self._name_index is None:
+            index = {}
+            for function in self.functions.values():
+                index.setdefault(function.name, []).append(function)
+            self._name_index = index
+        return self._name_index.get(name, [])
 
     def to_dict(self):
         return {
@@ -194,13 +225,9 @@ class ProjectSymbolIR:
                 for symbol_id, function in sorted(self.functions.items())
             },
             "types": {
-                name: declaration.to_dict()
-                for name, declaration in sorted(self.types.items())
+                name: declaration.to_dict() for name, declaration in sorted(self.types.items())
             },
-            "macros": {
-                name: macro.to_dict()
-                for name, macro in sorted(self.macros.items())
-            },
+            "macros": {name: macro.to_dict() for name, macro in sorted(self.macros.items())},
             "diagnostics": self.diagnostics,
         }
 

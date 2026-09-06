@@ -80,6 +80,9 @@ def test_make_project_matches_oracle_is_deterministic_and_emits_metrics(tmp_path
         assert metrics["counters"]["memory_copy_bytes"] > 0
         assert metrics["phases"]["artifact_load"]["count"] == 1
         assert metrics["phases"]["command_submission"]["count"] >= 4
+        assert metrics["phases"]["command_submission.kernel.find_nonce"]["count"] == 1
+        assert metrics["phases"]["gpu_execution.kernel.find_nonce"]["count"] == 1
+        assert metrics["counters"]["kernel_dispatches.find_nonce"] == 1
         assert metrics["phases"]["synchronization_wait"]["count"] >= 4
 
     assert all(output == expected for output in outputs)
