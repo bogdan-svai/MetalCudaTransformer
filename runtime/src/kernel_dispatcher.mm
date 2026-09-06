@@ -6,7 +6,7 @@ namespace mcu::runtime {
 
 cudaError_t KernelDispatcher::dispatch(
     id<MTLDevice> device,
-    id<MTLCommandQueue> queue,
+    id<MTLCommandBuffer> command,
     BufferRegistry& buffers,
     ArtifactCatalog& artifacts,
     PipelineCache& pipelines,
@@ -16,7 +16,6 @@ cudaError_t KernelDispatcher::dispatch(
     const KernelArgument* arguments,
     std::size_t argument_count,
     std::size_t shared_bytes,
-    id<MTLCommandBuffer> __strong& submitted,
     std::string& error
 ) {
     NSDictionary* route = artifacts.route(kernel_name);
@@ -79,7 +78,10 @@ cudaError_t KernelDispatcher::dispatch(
     }
 
     auto submission_started = std::chrono::steady_clock::now();
-    id<MTLCommandBuffer> command = [queue commandBuffer];
+    if (!command) {
+        error = "Metal command buffer creation failed";
+        return cudaErrorLaunchFailure;
+    }
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     [encoder setComputePipelineState:pipeline];
     for (NSUInteger index = 0; index < [bindings count]; ++index) {
@@ -102,7 +104,6 @@ cudaError_t KernelDispatcher::dispatch(
     [encoder dispatchThreadgroups:MTLSizeMake(grid.x, grid.y, grid.z)
              threadsPerThreadgroup:physical];
     [encoder endEncoding];
-    [command commit];
     recordRuntimeMetric(
         "command_submission",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - submission_started).count()
@@ -113,7 +114,6 @@ cudaError_t KernelDispatcher::dispatch(
     );
     incrementRuntimeCounter("kernel_dispatches");
     incrementRuntimeCounter((std::string("kernel_dispatches.") + kernel_name).c_str());
-    submitted = command;
     return cudaSuccess;
 }
 

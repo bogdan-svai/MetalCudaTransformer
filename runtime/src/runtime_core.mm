@@ -161,6 +161,9 @@ public:
         if (!streams_.prepare(stream, error)) {
             return fail(cudaErrorLaunchFailure, error);
         }
+        if (!streams_.flush(stream, error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
         mcu::runtime::PendingCommand pending;
         cudaError_t result = mcu::runtime::AsyncCopyDispatcher::submit(
             context_.device(), state->queue, buffers_, dst, src, count, kind, pending, error
@@ -787,18 +790,18 @@ public:
         if (!streams_.prepare(stream, error)) {
             return fail(cudaErrorLaunchFailure, error);
         }
-        id<MTLCommandBuffer> submitted = nil;
+        id<MTLCommandBuffer> batch = streams_.acquireKernelBatch(stream, error);
+        if (!batch) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
         cudaError_t result = mcu::runtime::KernelDispatcher::dispatch(
-            context_.device(), state->queue, buffers_, artifacts_, pipelines_, kernel_name,
-            grid, block, arguments, argument_count, shared_bytes, submitted, error
+            context_.device(), batch, buffers_, artifacts_, pipelines_, kernel_name,
+            grid, block, arguments, argument_count, shared_bytes, error
         );
         if (result != cudaSuccess) {
             return fail(result, error);
         }
-        mcu::runtime::PendingCommand pending;
-        pending.command = submitted;
-        pending.operation = std::string("kernel ") + kernel_name;
-        return streams_.enqueue(stream, std::move(pending), error)
+        return streams_.recordKernel(stream, kernel_name, error)
             ? succeed()
             : fail(cudaErrorInvalidValue, error);
     }
@@ -1030,6 +1033,9 @@ public:
             return failCublas(CUBLAS_STATUS_INVALID_VALUE, cudaErrorInvalidValue, error);
         }
         if (!streams_.prepare(handle->stream, error)) {
+            return failCublas(CUBLAS_STATUS_EXECUTION_FAILED, cudaErrorLaunchFailure, error);
+        }
+        if (!streams_.flush(handle->stream, error)) {
             return failCublas(CUBLAS_STATUS_EXECUTION_FAILED, cudaErrorLaunchFailure, error);
         }
         id<MTLCommandBuffer> command = [state->queue commandBuffer];

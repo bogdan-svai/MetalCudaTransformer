@@ -106,7 +106,9 @@ int main() {
     assert "medium_streams=40,60" in result.stdout
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert metrics["counters"]["streams_created"] == 2
-    assert metrics["counters"]["command_buffers_submitted"] >= 75
+    assert metrics["counters"]["command_buffers_submitted"] <= 10
+    assert metrics["counters"]["kernel_batches_submitted"] >= 3
+    assert "gpu_execution.kernel.batch" not in metrics["phases"]
     assert metrics["counters"]["async_copy_bytes"] > 0
 
 
@@ -133,7 +135,8 @@ def test_hard_multilaunch_is_exact_and_batches_waits(tmp_path):
     assert float(values["speedup"]) > 1.0
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert metrics["counters"]["kernel_dispatches"] == 201
-    assert metrics["counters"]["command_buffers_submitted"] >= 203
+    assert metrics["counters"]["command_buffers_submitted"] < metrics["counters"]["kernel_dispatches"]
+    assert 101 <= metrics["counters"]["kernel_batches_submitted"] <= 102
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="Stage 10 stress test requires Metal")

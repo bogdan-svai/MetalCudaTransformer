@@ -1,0 +1,43 @@
+# SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+# SYSTEM LAYER: STAGE 16 - COMMAND BUFFER BATCHING
+# -----------------------------------------------------------------------------
+
+## 1. Objective
+
+Stage 16 reduces Metal submission overhead by encoding consecutive kernels from
+one CUDA stream into one command buffer. Correct CUDA ordering and deferred
+error behavior remain mandatory.
+
+## 2. Safety contract
+
+- A batch belongs to exactly one CUDA stream and its Metal command queue.
+- Async copies, cuBLAS work, stream/device synchronization, resource release,
+  and cross-stream legacy-default ordering flush outstanding kernel batches.
+- A stream is never destroyed with an uncommitted batch.
+- Kernel dispatch counters remain per launch; command-buffer and batch counters
+  describe physical Metal submissions.
+- GPU timing for a repeated kernel in one batch is reported once for the batch,
+  avoiding multiplication of the command-buffer duration by launch count.
+
+## 3. Acceptance
+
+- Existing stream, event, graph, cuBLAS, memory, and error tests remain green.
+- The medium and hard multi-launch tiers submit fewer command buffers than
+  logical kernel dispatches.
+- Stage 10 performance and large-kernel regression budgets remain green.
+
+## 4. Initial Apple M4 Max result
+
+Three-sample validation on 2026-09-06 passed all Stage 10 budgets:
+
+- 10 launches: 3.493x median batched-vs-synchronous speedup;
+- 100 launches: 14.719x median speedup and 104 command buffers for the combined
+  synchronous/batched comparison;
+- 1,000 launches: 34.729x median speedup and 1,004 command buffers for the
+  combined comparison;
+- one large launch: 1.065x median speedup, with no large-kernel regression.
+
+The comparison intentionally contains a synchronous half that flushes every
+launch. The batched half collapses consecutive kernels at synchronization
+boundaries; therefore combined command-buffer counts do not represent the
+batched half alone.

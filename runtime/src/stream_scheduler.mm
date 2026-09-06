@@ -7,6 +7,8 @@ namespace mcu::runtime {
 
 StreamRegistry::~StreamRegistry() {
     for (auto& item : streams_) {
+        std::string ignored;
+        flushState(item.second, ignored);
         for (PendingCommand& pending : item.second.pending) {
             [pending.command waitUntilCompleted];
             if (pending.host_destination && pending.copy_size &&
@@ -94,6 +96,52 @@ bool StreamRegistry::enqueue(cudaStream_t stream, PendingCommand command, std::s
     return true;
 }
 
+id<MTLCommandBuffer> StreamRegistry::acquireKernelBatch(
+    cudaStream_t stream, std::string& error
+) {
+    StreamState* state = get(stream, error);
+    if (!state) {
+        return nil;
+    }
+    if (!state->active_kernel_batch) {
+        state->active_kernel_batch = [state->queue commandBuffer];
+    }
+    return state->active_kernel_batch;
+}
+
+bool StreamRegistry::recordKernel(
+    cudaStream_t stream, const char* kernel_name, std::string& error
+) {
+    StreamState* state = get(stream, error);
+    if (!state || !state->active_kernel_batch) {
+        return false;
+    }
+    state->active_kernel_operations.emplace_back(kernel_name ? kernel_name : "<unknown>");
+    return true;
+}
+
+bool StreamRegistry::flush(cudaStream_t stream, std::string& error) {
+    StreamState* state = get(stream, error);
+    return state && flushState(*state, error);
+}
+
+bool StreamRegistry::flushState(StreamState& state, std::string& error) {
+    if (!state.active_kernel_batch) {
+        return true;
+    }
+    PendingCommand pending;
+    pending.command = state.active_kernel_batch;
+    pending.operation = "kernel batch";
+    pending.kernel_operations = std::move(state.active_kernel_operations);
+    [pending.command commit];
+    state.active_kernel_batch = nil;
+    state.active_kernel_operations.clear();
+    state.pending.push_back(std::move(pending));
+    incrementRuntimeCounter("command_buffers_submitted");
+    incrementRuntimeCounter("kernel_batches_submitted");
+    return true;
+}
+
 bool StreamRegistry::synchronize(cudaStream_t stream, std::string& error) {
     StreamState* state = get(stream, error);
     return state && synchronizeState(*state, error);
@@ -123,6 +171,9 @@ bool StreamRegistry::synchronizeExplicit(std::string& error) {
 }
 
 bool StreamRegistry::synchronizeState(StreamState& state, std::string& error) {
+    if (!flushState(state, error)) {
+        return false;
+    }
     if (state.pending.empty()) {
         return true;
     }
@@ -141,8 +192,15 @@ bool StreamRegistry::synchronizeState(StreamState& state, std::string& error) {
         if (gpu_end >= gpu_start && gpu_start > 0.0) {
             double gpu_seconds = gpu_end - gpu_start;
             recordRuntimeMetric("gpu_execution", gpu_seconds);
+            std::unordered_set<std::string> measured_kernels(
+                pending.kernel_operations.begin(), pending.kernel_operations.end()
+            );
+            for (const std::string& kernel_name : measured_kernels) {
+                recordRuntimeMetric((std::string("gpu_execution.kernel.") + kernel_name).c_str(), gpu_seconds);
+            }
             const std::string kernel_prefix = "kernel ";
-            if (pending.operation.rfind(kernel_prefix, 0) == 0) {
+            if (pending.kernel_operations.empty() &&
+                pending.operation.rfind(kernel_prefix, 0) == 0) {
                 std::string kernel_name = pending.operation.substr(kernel_prefix.size());
                 recordRuntimeMetric((std::string("gpu_execution.kernel.") + kernel_name).c_str(), gpu_seconds);
             }
