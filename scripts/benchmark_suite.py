@@ -43,8 +43,9 @@ def compiler_provenance(build):
         return {"available": False}
     build_payload = payload.get("build", {})
     optimization = build_payload.get("optimization_report", {})
+    native_payload = build_payload.get("native", {})
     if not optimization:
-        sidecar = build_payload.get("sidecar")
+        sidecar = build_payload.get("sidecar") or native_payload.get("sidecar")
         if sidecar:
             routing_path = Path(sidecar) / "routing_table.txt"
             try:
