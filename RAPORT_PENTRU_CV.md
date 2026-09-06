@@ -112,8 +112,8 @@ Built an end-to-end CUDA-to-Metal compiler and runtime prototype that ports educ
 - Nu afirma „full CUDA compatibility”; suprafața este explicit parțială.
 - Nu afirma paritate de performanță cu NVIDIA/CUDA; proiectul însuși exclude această concluzie.
 - Nu publica un procent de speedup fără raportul benchmark, configurația hardware și workload-ul asociat.
-- Suita poate fi prezentată ca validată integral în mediul local curent: la 6 septembrie 2026, rularea finală cu Metal Toolchain 17A324 a produs **134 passed în 52,58 secunde**. Păstrează comanda și mediul atunci când citezi rezultatul.
-- Stage 15 și optimizările noi apar în modificări locale necomise; descrie-le ca work in progress până sunt curate, reverificate și comise.
+- Suita poate fi prezentată ca validată integral în mediul local curent: la 6 septembrie 2026, rularea cu Metal Toolchain 17A324 a produs **136 passed în 56,66 secunde**. Păstrează comanda și mediul atunci când citezi rezultatul.
+- Stage 16 adaugă batching pentru stream-uri explicite, pool bounded pentru staging buffers și cache persistent pentru semantic IR. Nu prezenta aceste rezultate ca benchmark universal; menționează Apple M4 Max și workload-ul măsurat.
 
 ## Evaluarea stării repository-ului înainte de publicare
 
@@ -146,4 +146,4 @@ Păstrează nuanța că este un prototip cu suport CUDA parțial.
 
 ## Metodologia raportului
 
-Raportul a fost obținut prin inspecția codului, README-ului, documentelor de arhitectură și Stage 1-15, istoricului și stării Git, contractului `mcu capabilities`, configurației CI și suitei pytest. Componenta oficială Metal Toolchain 17A324 a fost instalată prin Xcode, iar suita finală a fost validată cu `TOOLCHAINS=com.apple.dt.toolchain.Metal.32023 .venv/bin/python -m pytest -q`, rezultând 134 de teste trecute. Au fost implementate și validate optimizări pentru cheia cache, lookup-ul simbolurilor, citirea surselor și compilarea paralelă a unităților host.
+Raportul a fost obținut prin inspecția codului, README-ului, documentelor de arhitectură și Stage 1-16, istoricului și stării Git, contractului `mcu capabilities`, configurației CI și suitei pytest. Componenta oficială Metal Toolchain 17A324 a fost instalată prin Xcode, iar suita finală a fost validată cu `TOOLCHAINS=com.apple.dt.toolchain.Metal.32023 .venv/bin/python -m pytest -q`, rezultând 136 de teste trecute. Au fost implementate și validate optimizări pentru cheia cache, lookup-ul simbolurilor, citirea surselor, compilarea paralelă a unităților host, batching de command buffers, reutilizarea staging buffers și cache semantic persistent.

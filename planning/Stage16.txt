@@ -59,3 +59,10 @@ content digests. The cache reconstructs typed functions, calls, effects, local
 objects, statements, declarations, and macros; source changes invalidate the
 entry. A representative four-file project reduced frontend time from 69.9 ms
 to 20.6 ms across separate processes (local measurement).
+
+## 7. Default-stream compatibility
+
+The legacy/default CUDA stream keeps single-submit behavior: its kernel batch is
+flushed immediately after dispatch. Explicit streams retain command-buffer
+batching. This isolates the optimization from the Stage 10 launch-only baseline
+while preserving measured gains for asynchronous explicit-stream workloads.

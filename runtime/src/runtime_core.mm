@@ -801,9 +801,15 @@ public:
         if (result != cudaSuccess) {
             return fail(result, error);
         }
-        return streams_.recordKernel(stream, kernel_name, error)
-            ? succeed()
-            : fail(cudaErrorInvalidValue, error);
+        if (!streams_.recordKernel(stream, kernel_name, error)) {
+            return fail(cudaErrorInvalidValue, error);
+        }
+        // Keep the legacy default stream's single-submit behavior stable. Batching
+        // is enabled for explicit streams, where Stage 10 ordering is independent.
+        if (!stream && !streams_.flush(stream, error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
+        return succeed();
     }
 
     static std::size_t scalarSize(NSString* type) {
