@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.backends.metal import transpile
@@ -73,29 +73,26 @@ class CompilerPipeline:
             )
             diagnostics = validate(metadata)
             semantic = parse_semantic_project(metadata)
-        semantic_errors = [
-            item for item in semantic.diagnostics
-            if item.get("severity") == "error"
-        ]
+            timings.cache("semantic", semantic.cached)
+        semantic_errors = [item for item in semantic.diagnostics if item.get("severity") == "error"]
         requires_semantic = native or any(
             function.get("kind") in {"DEVICE_FUNC", "HOST_DEVICE_FUNC"}
             for function in metadata.get("functions", [])
         )
         if os.environ.get("MCU_SEMANTIC_STRICT", "0") == "1" and not semantic.complete:
             diagnostics.extend(item for item in semantic_errors if item not in diagnostics)
-            diagnostics.append({
-                "code": "SemanticFrontendRequired",
-                "severity": "error",
-                "message": "MCU_SEMANTIC_STRICT=1 requires complete libclang semantic IR; regex fallback is disabled.",
-                "file": None,
-                "line": None,
-                "column": None,
-            })
-        if requires_semantic and not semantic.complete:
-            diagnostics.extend(
-                item for item in semantic_errors
-                if item not in diagnostics
+            diagnostics.append(
+                {
+                    "code": "SemanticFrontendRequired",
+                    "severity": "error",
+                    "message": "MCU_SEMANTIC_STRICT=1 requires complete libclang semantic IR; regex fallback is disabled.",
+                    "file": None,
+                    "line": None,
+                    "column": None,
+                }
             )
+        if requires_semantic and not semantic.complete:
+            diagnostics.extend(item for item in semantic_errors if item not in diagnostics)
 
         link_plan = None
         if semantic.project and semantic.complete:
@@ -106,10 +103,7 @@ class CompilerPipeline:
             coarsening_result = plan_coarsening(metadata, requested_factor=coarsening)
         diagnostics.extend(coarsening_result["diagnostics"])
         if coarsening_result["recovered_hardware_limit"]:
-            diagnostics = [
-                item for item in diagnostics
-                if item["code"] != "HardwareLimitExceeded"
-            ]
+            diagnostics = [item for item in diagnostics if item["code"] != "HardwareLimitExceeded"]
 
         payload = self._base_payload(command, metadata, diagnostics, not _has_errors(diagnostics))
         if _has_errors(diagnostics):
@@ -127,7 +121,9 @@ class CompilerPipeline:
         payload["build"] = {
             "metal_file": "generated.metal",
             "routing_table": "routing_table.txt",
-            "symbol_manifest": "symbol_manifest.json" if generated.get("symbol_manifest_text") else None,
+            "symbol_manifest": (
+                "symbol_manifest.json" if generated.get("symbol_manifest_text") else None
+            ),
             "device_function_count": sum(
                 function.get("kind") in {"DEVICE_FUNC", "HOST_DEVICE_FUNC"}
                 for function in metadata.get("functions", [])
@@ -166,14 +162,16 @@ class CompilerPipeline:
                 if native_diagnostics:
                     payload["diagnostics"].extend(native_diagnostics)
                 else:
-                    payload["diagnostics"].append({
-                        "code": "NativeCompileFailed",
-                        "severity": "error",
-                        "message": native_result["diagnostic"],
-                        "file": None,
-                        "line": None,
-                        "column": None,
-                    })
+                    payload["diagnostics"].append(
+                        {
+                            "code": "NativeCompileFailed",
+                            "severity": "error",
+                            "message": native_result["diagnostic"],
+                            "file": None,
+                            "line": None,
+                            "column": None,
+                        }
+                    )
                 payload["timings"] = timings.to_dict()
                 self._write(payload, extras)
                 return CommandResult(1, payload)
@@ -200,14 +198,16 @@ def invalid_path_payload(command, path):
         "ok": False,
         "command": command,
         "metadata": {},
-        "diagnostics": [{
-            "code": "InvalidTargetPath",
-            "severity": "error",
-            "message": f"Target path does not exist: {path}",
-            "file": str(path),
-            "line": None,
-            "column": None,
-        }],
+        "diagnostics": [
+            {
+                "code": "InvalidTargetPath",
+                "severity": "error",
+                "message": f"Target path does not exist: {path}",
+                "file": str(path),
+                "line": None,
+                "column": None,
+            }
+        ],
     }
 
 

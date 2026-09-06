@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -5,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.backends.host import rewrite_triple_chevrons
+from core.cache import CacheStore, fingerprint
 from core.frontend.clang_probe import CUDA_STUBS, _configure
 from core.frontend.regex_parser import iter_function_calls, read_text, split_top_level
 from core.ir.symbols import (
@@ -20,6 +23,7 @@ from core.ir.symbols import (
     TypeIR,
     canonical_symbol_id,
 )
+from core.version import MCU_VERSION
 
 
 @dataclass
@@ -27,6 +31,7 @@ class SemanticFrontendResult:
     project: ProjectSymbolIR | None
     complete: bool
     diagnostics: list[dict]
+    cached: bool = False
 
 
 def parse_semantic_project(metadata):
@@ -46,6 +51,21 @@ def parse_semantic_project(metadata):
         return _unavailable("Native libclang library was not found")
 
     source_paths = [Path(path) for path in metadata.get("sources", [])]
+    cache = CacheStore()
+    cache_key = fingerprint(
+        {
+            "schema": 1,
+            "mcu_version": MCU_VERSION,
+            "compile_context": metadata.get("compile_context", {}),
+            "sources": [
+                (str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in source_paths
+            ],
+        }
+    )
+    cached = _restore_semantic_cache(cache, cache_key)
+    if cached is not None:
+        return cached
     semantic_source = _build_semantic_source(source_paths)
     diagnostics = []
     try:
@@ -94,7 +114,41 @@ def parse_semantic_project(metadata):
                 }
             )
     project.diagnostics = diagnostics
-    return SemanticFrontendResult(project, not missing, diagnostics)
+    result = SemanticFrontendResult(project, not missing, diagnostics)
+    _publish_semantic_cache(cache, cache_key, result)
+    return result
+
+
+def _restore_semantic_cache(cache, key):
+    with tempfile.TemporaryDirectory(prefix="mcu-semantic-restore-") as directory:
+        target = Path(directory) / "semantic.json"
+        if not cache.restore("semantic", key, "semantic.json", target):
+            return None
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            project = ProjectSymbolIR.from_dict(payload["project"])
+            return SemanticFrontendResult(
+                project, bool(payload["complete"]), payload["diagnostics"], cached=True
+            )
+        except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+            return None
+
+
+def _publish_semantic_cache(cache, key, result):
+    with tempfile.TemporaryDirectory(prefix="mcu-semantic-publish-") as directory:
+        source = Path(directory) / "semantic.json"
+        source.write_text(
+            json.dumps(
+                {
+                    "complete": result.complete,
+                    "diagnostics": result.diagnostics,
+                    "project": result.project.to_dict(),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        cache.publish("semantic", key, "semantic.json", source)
 
 
 def _build_semantic_source(source_paths):

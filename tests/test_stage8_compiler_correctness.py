@@ -17,7 +17,28 @@ def _semantic_build(tmp_path, source):
     assert not [item for item in semantic.diagnostics if item["severity"] == "error"]
     plan = build_device_link_plan(semantic.project)
     assert not [item for item in plan.diagnostics if item["severity"] == "error"], plan.diagnostics
-    return semantic.project, plan, transpile(metadata, semantic_project=semantic.project, link_plan=plan)
+    return (
+        semantic.project,
+        plan,
+        transpile(metadata, semantic_project=semantic.project, link_plan=plan),
+    )
+
+
+def test_persistent_semantic_cache_hits_and_invalidates_on_content_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCU_CACHE_DIR", str(tmp_path / "cache"))
+    target = tmp_path / "cached.cu"
+    target.write_text("__global__ void first(int* out) { out[0] = 1; }", encoding="ascii")
+    metadata = parse_project([target])
+    cold = parse_semantic_project(metadata)
+    warm = parse_semantic_project(metadata)
+    assert cold.cached is False
+    assert warm.cached is True
+    assert warm.project.functions_named("first")
+
+    target.write_text("__global__ void second(int* out) { out[0] = 2; }", encoding="ascii")
+    changed = parse_semantic_project(parse_project([target]))
+    assert changed.cached is False
+    assert changed.project.functions_named("second")
 
 
 def test_parameter_arrays_decay_and_recovered_calls_are_emitted(tmp_path):
@@ -108,7 +129,8 @@ __global__ void kernel(unsigned int* output) {{
     assert "const unsigned int values[16]" not in metal
     assert metal.count("constant unsigned int mcu_const_") == 1
     promotion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "promote_literal_constant_arrays"
     )
     assert promotion["replacements"] == 2
@@ -131,7 +153,8 @@ def test_readonly_nonconst_literal_table_is_promoted(tmp_path):
     assert "unsigned int table[64]" not in metal
     assert "constant unsigned int mcu_const_" in metal
     promotion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "promote_literal_constant_arrays"
     )
     assert promotion["replacements"] == 1
@@ -195,7 +218,8 @@ __global__ void kernel(unsigned int* output, int index) {
     assert "const unsigned int small[4]" in metal
     assert "const unsigned int symbolic[16]" in metal
     promotion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "promote_literal_constant_arrays"
     )
     assert promotion["replacements"] == 0
@@ -255,7 +279,8 @@ def test_static_loop_unroll_limit_can_be_tuned_for_benchmarking(tmp_path, monkey
     metal = generated["metal_source"]
     assert "for (int i = 0; i < 16; ++i)" not in metal
     unroll = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "unroll_small_static_loops"
     )
     assert unroll["details"]["max_iterations"] == 16
@@ -300,7 +325,8 @@ def test_small_constant_index_arrays_are_scalarized_after_unroll(tmp_path):
     assert "local_0 = 0 + 1;" in metal
     assert "output[0] = local_0 + local_3;" in metal
     scalarize = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "scalarize_small_constant_index_arrays"
     )
     assert scalarize["replacements"] == 1
@@ -321,7 +347,8 @@ def test_dynamic_index_arrays_are_not_scalarized(tmp_path):
     metal = generated["metal_source"]
     assert "int local[4]" in metal
     scalarize = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "scalarize_small_constant_index_arrays"
     )
     assert scalarize["replacements"] == 0
@@ -343,7 +370,9 @@ def test_dynamic_recurrence_arrays_are_reported_as_sliding_window_candidates(tmp
 """,
     )
 
-    candidates = generated["optimization_report"]["analysis"]["dynamic_array_candidates"]["candidates"]
+    candidates = generated["optimization_report"]["analysis"]["dynamic_array_candidates"][
+        "candidates"
+    ]
     buffer = next(item for item in candidates if item["array"] == "buffer")
     assert buffer["recurrence"]["index_variable"] == "i"
     assert buffer["recurrence"]["distances"] == [2, 7, 16]
@@ -373,6 +402,7 @@ def test_register_pressure_analysis_exposes_general_cost_signal(tmp_path, monkey
 
 def test_predicate_materialization_candidates_are_reported_generically(tmp_path, monkeypatch):
     from core.passes.metal_optimizer import analyze_predicate_materialization
+
     source = """inline void kernel_msl() {
     int value[32];
     produce(value);
@@ -400,7 +430,12 @@ __global__ void kernel(int* output) {
     assert pure.effects["pure"] is True
     assert writer.effects["writes_memory"] is True
     assert writer.effects["writes_parameters"] == ["output"]
-    assert "write_value" in next(item for item in project.functions.values() if item.name == "kernel").effects["calls"]
+    assert (
+        "write_value"
+        in next(item for item in project.functions.values() if item.name == "kernel").effects[
+            "calls"
+        ]
+    )
 
 
 def test_semantic_ir_propagates_effects_through_call_graph(tmp_path):
@@ -485,7 +520,8 @@ def test_unbraced_recurrence_loop_is_fused_into_consumer_loop(tmp_path, monkeypa
     assert "buffer[i & 15] = buffer[(i - 2) & 15]" in metal
     assert "value = buffer[i & 15];" in metal
     fusion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "fuse_recurrent_array_consumers"
     )
     assert fusion["replacements"] == 1
@@ -524,7 +560,8 @@ def test_braced_recurrence_with_temporaries_is_fused_into_typed_consumer(tmp_pat
     assert "unsigned int accumulator = 7;" in metal
     assert "for (unsigned int i = 16; i < 32; ++i)" not in metal
     fusion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "fuse_recurrent_array_consumers"
     )
     assert fusion["replacements"] == 1
@@ -551,7 +588,8 @@ def test_braced_recurrence_with_unsafe_array_index_is_not_fused(tmp_path, monkey
     metal = generated["metal_source"]
     assert "buffer[32]" in metal
     fusion = next(
-        item for item in generated["optimization_report"]["passes"]
+        item
+        for item in generated["optimization_report"]["passes"]
         if item["name"] == "fuse_recurrent_array_consumers"
     )
     assert fusion["replacements"] == 0

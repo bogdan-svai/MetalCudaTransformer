@@ -178,6 +178,39 @@ int main() {
     assert "stress_stream=55" in result.stdout
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="Stage 16 staging pool requires Metal")
+def test_repeated_async_copies_reuse_bounded_staging_buffers(tmp_path):
+    executable, environment = _build(tmp_path, r'''
+#include <cstdio>
+__global__ void passthrough(int* values) { values[threadIdx.x] += 1; }
+int main() {
+    int input[64] = {};
+    int output[64] = {};
+    int* device = nullptr;
+    cudaStream_t stream = nullptr;
+    cudaMalloc(&device, sizeof(input));
+    cudaStreamCreate(&stream);
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        cudaMemcpyAsync(device, input, sizeof(input), cudaMemcpyHostToDevice, stream);
+        passthrough<<<1, 64, 0, stream>>>(device);
+        cudaMemcpyAsync(output, device, sizeof(output), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+    }
+    cudaStreamDestroy(stream);
+    cudaFree(device);
+    std::printf("pool=%d\n", output[0]);
+    return output[0] == 1 ? 0 : 20;
+}
+''', name="staging_pool")
+    metrics_path = tmp_path / "staging-pool-metrics.json"
+    environment["MCU_METRICS_FILE"] = str(metrics_path)
+    result = subprocess.run([str(executable)], env=environment, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr or result.stdout
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["counters"]["staging_pool_hits"] >= 6
+    assert metrics["counters"]["staging_pool_misses"] == 2
+
+
 def test_four_value_cuda_launch_configuration_lowers_stream():
     from core.host_transpiler import transform_host_source
 

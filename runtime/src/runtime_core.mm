@@ -166,7 +166,7 @@ public:
         }
         mcu::runtime::PendingCommand pending;
         cudaError_t result = mcu::runtime::AsyncCopyDispatcher::submit(
-            context_.device(), state->queue, buffers_, dst, src, count, kind, pending, error
+            context_.device(), state->queue, buffers_, streams_, dst, src, count, kind, pending, error
         );
         if (result != cudaSuccess) {
             return fail(result, error);

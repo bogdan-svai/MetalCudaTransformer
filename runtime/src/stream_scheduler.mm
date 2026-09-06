@@ -208,6 +208,10 @@ bool StreamRegistry::synchronizeState(StreamState& state, std::string& error) {
         if (pending.host_destination && pending.copy_size) {
             std::memcpy(pending.host_destination, [pending.staging contents], pending.copy_size);
         }
+        if (pending.staging) {
+            recycleStaging(pending.staging);
+            pending.staging = nil;
+        }
     }
     recordRuntimeMetric(
         "synchronization_wait",
@@ -218,10 +222,43 @@ bool StreamRegistry::synchronizeState(StreamState& state, std::string& error) {
     return true;
 }
 
+id<MTLBuffer> StreamRegistry::acquireStaging(id<MTLDevice> device, std::size_t size) {
+    auto best = staging_pool_.end();
+    for (auto candidate = staging_pool_.begin(); candidate != staging_pool_.end(); ++candidate) {
+        if ([*candidate length] >= size &&
+            (best == staging_pool_.end() || [*candidate length] < [*best length])) {
+            best = candidate;
+        }
+    }
+    if (best != staging_pool_.end()) {
+        id<MTLBuffer> buffer = *best;
+        staging_pool_bytes_ -= [buffer length];
+        staging_pool_.erase(best);
+        incrementRuntimeCounter("staging_pool_hits");
+        return buffer;
+    }
+    incrementRuntimeCounter("staging_pool_misses");
+    return [device newBufferWithLength:size options:MTLResourceStorageModeShared];
+}
+
+void StreamRegistry::recycleStaging(id<MTLBuffer> buffer) {
+    constexpr std::size_t maximum_buffers = 16;
+    constexpr std::size_t maximum_bytes = 64 * 1024 * 1024;
+    std::size_t size = [buffer length];
+    if (size > maximum_bytes || staging_pool_.size() >= maximum_buffers ||
+        staging_pool_bytes_ + size > maximum_bytes) {
+        incrementRuntimeCounter("staging_pool_evictions");
+        return;
+    }
+    staging_pool_.push_back(buffer);
+    staging_pool_bytes_ += size;
+}
+
 cudaError_t AsyncCopyDispatcher::submit(
     id<MTLDevice> device,
     id<MTLCommandQueue> queue,
     BufferRegistry& buffers,
+    StreamRegistry& streams,
     void* dst,
     const void* src,
     std::size_t count,
@@ -247,11 +284,14 @@ cudaError_t AsyncCopyDispatcher::submit(
     id<MTLBuffer> staging = nil;
     if (resolved == cudaMemcpyHostToDevice) {
         buffers.find(dst, count, destination, destination_offset);
-        staging = [device newBufferWithBytes:src length:count options:MTLResourceStorageModeShared];
+        staging = streams.acquireStaging(device, count);
+        if (staging) {
+            std::memcpy([staging contents], src, count);
+        }
         source = staging;
     } else if (resolved == cudaMemcpyDeviceToHost) {
         buffers.find(src, count, source, source_offset);
-        staging = [device newBufferWithLength:count options:MTLResourceStorageModeShared];
+        staging = streams.acquireStaging(device, count);
         destination = staging;
     } else {
         buffers.find(dst, count, destination, destination_offset);

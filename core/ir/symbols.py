@@ -137,6 +137,7 @@ class FunctionSymbolIR:
             "parameters": [parameter.to_dict() for parameter in self.parameters],
             "source": self.source.to_dict(),
             "body_line": self.body_line,
+            "body": self.body,
             "translation_unit": self.translation_unit,
             "calls": [call.to_dict() for call in self.calls],
             "local_objects": [item.to_dict() for item in self.local_objects],
@@ -230,6 +231,106 @@ class ProjectSymbolIR:
             "macros": {name: macro.to_dict() for name, macro in sorted(self.macros.items())},
             "diagnostics": self.diagnostics,
         }
+
+    @classmethod
+    def from_dict(cls, payload):
+        functions = {}
+        for symbol_id, item in payload.get("functions", {}).items():
+            functions[symbol_id] = FunctionSymbolIR(
+                symbol_id=item["symbol_id"],
+                name=item["name"],
+                kind=item["kind"],
+                qualifiers=tuple(item.get("qualifiers", [])),
+                return_type=_type_from_dict(item["return_type"]),
+                parameters=[_parameter_from_dict(value) for value in item.get("parameters", [])],
+                source=_source_from_dict(item["source"]),
+                body_line=item.get("body_line"),
+                body=item.get("body", ""),
+                translation_unit=item.get("translation_unit", ""),
+                calls=[_call_from_dict(value) for value in item.get("calls", [])],
+                local_objects=[_local_from_dict(value) for value in item.get("local_objects", [])],
+                statements=[_statement_from_dict(value) for value in item.get("statements", [])],
+                effects=item.get("effects", {}),
+            )
+        types = {
+            name: TypeDeclarationIR(
+                name=item["name"],
+                kind=item["kind"],
+                fields=tuple(_parameter_from_dict(value) for value in item.get("fields", [])),
+                underlying_type=item.get("underlying_type"),
+                source=_source_from_dict(item["source"]),
+            )
+            for name, item in payload.get("types", {}).items()
+        }
+        macros = {
+            name: MacroIR(
+                name=item["name"],
+                parameters=tuple(item.get("parameters", [])),
+                expression=item["expression"],
+                source=_source_from_dict(item["source"]),
+            )
+            for name, item in payload.get("macros", {}).items()
+        }
+        return cls(
+            frontend=payload["frontend"],
+            translation_units=list(payload.get("translation_units", [])),
+            functions=functions,
+            types=types,
+            macros=macros,
+            diagnostics=list(payload.get("diagnostics", [])),
+        )
+
+
+def _source_from_dict(payload):
+    return SourceLocationIR(payload["file"], payload.get("line"), payload.get("column"))
+
+
+def _type_from_dict(payload):
+    return TypeIR(
+        payload["spelling"],
+        payload["canonical"],
+        payload.get("kind", "value"),
+        payload.get("is_const", False),
+        payload.get("pointer_depth", 0),
+    )
+
+
+def _parameter_from_dict(payload):
+    return ParameterIR(payload["name"], _type_from_dict(payload["type"]))
+
+
+def _call_from_dict(payload):
+    return CallEdgeIR(
+        payload["caller_id"],
+        payload["callee_name"],
+        payload.get("callee_id"),
+        tuple(payload.get("arguments", [])),
+        _source_from_dict(payload["source"]),
+        tuple(_type_from_dict(item) for item in payload.get("argument_types", [])),
+        tuple(payload.get("argument_symbols", [])),
+    )
+
+
+def _local_from_dict(payload):
+    return LocalObjectIR(
+        payload["name"],
+        _type_from_dict(payload["type"]),
+        payload["storage"],
+        payload.get("array_extent"),
+        payload.get("variable_length", False),
+        payload.get("incomplete_array", False),
+        _source_from_dict(payload["source"]),
+    )
+
+
+def _statement_from_dict(payload):
+    return StatementIR(
+        payload["kind"],
+        _source_from_dict(payload["source"]),
+        payload.get("text", ""),
+        tuple(payload.get("children", [])),
+        payload.get("attributes", {}),
+    )
 
 
 def canonical_symbol_id(name, parameter_types):

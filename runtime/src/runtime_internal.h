@@ -157,6 +157,7 @@ public:
     bool enqueue(cudaStream_t stream, PendingCommand command, std::string& error);
     bool synchronize(cudaStream_t stream, std::string& error);
     bool synchronizeAll(std::string& error);
+    id<MTLBuffer> acquireStaging(id<MTLDevice> device, std::size_t size);
     StreamState* get(cudaStream_t stream, std::string& error);
 
 private:
@@ -164,8 +165,11 @@ private:
     bool flushState(StreamState& state, std::string& error);
     bool synchronizeDefault(std::string& error);
     bool synchronizeExplicit(std::string& error);
+    void recycleStaging(id<MTLBuffer> buffer);
 
     std::unordered_map<cudaStream_t, StreamState> streams_;
+    std::vector<id<MTLBuffer>> staging_pool_;
+    std::size_t staging_pool_bytes_ = 0;
     std::uint64_t next_identifier_ = 1;
 };
 
@@ -230,6 +234,7 @@ public:
         id<MTLDevice> device,
         id<MTLCommandQueue> queue,
         BufferRegistry& buffers,
+        StreamRegistry& streams,
         void* dst,
         const void* src,
         std::size_t count,
