@@ -61,16 +61,18 @@ def optimize_metal_source(source, ir_analysis=None):
         "MCU_METAL_UNROLL_MAX", default=8, minimum=0, maximum=128
     )
     approved_loops = None
+    approved_loop_signatures = None
     if ir_analysis is not None:
-        approved_loops = sum(
-            1
+        approved_loop_signatures = {
+            _loop_signature(item.get("variable"), item.get("start"), item.get("operator"), item.get("stop"))
             for item in ir_analysis.get("static_loops", {}).get("candidates", [])
             if item.get("eligible")
-        )
+        }
     source, report = unroll_small_static_loops(
         source,
         max_iterations=unroll_limit,
         approved_loops=approved_loops,
+        approved_loop_signatures=approved_loop_signatures,
     )
     _record_pass_timing(report, pass_started)
     reports.append(report)
@@ -305,7 +307,9 @@ def rewrite_rotate_macros(source):
     )
 
 
-def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
+def unroll_small_static_loops(
+    source, max_iterations=8, approved_loops=None, approved_loop_signatures=None
+):
     cursor = 0
     pieces = []
     replacements = 0
@@ -342,7 +346,9 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
                 continue
             body = source[body_opening : body_end + 1]
             replacement, iterations = _render_unrolled_loop(specification, body, max_iterations)
-            if replacement is not None and (approved_loops is None or approved_loops > 0):
+            signature = _loop_signature(*specification)
+            approved = approved_loop_signatures is None or signature in approved_loop_signatures
+            if replacement is not None and approved and (approved_loops is None or approved_loops > 0):
                 pieces.append(source[cursor:position])
                 pieces.append(replacement)
                 replacements += 1
@@ -361,7 +367,9 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
             continue
         body = source[opening + 1 : closing]
         replacement, iterations = _render_unrolled_loop(specification, body, max_iterations)
-        if replacement is not None and approved_loops is not None and approved_loops <= 0:
+        signature = _loop_signature(*specification)
+        approved = approved_loop_signatures is None or signature in approved_loop_signatures
+        if replacement is not None and (not approved or (approved_loops is not None and approved_loops <= 0)):
             replacement, iterations = None, 0
         if replacement is None:
             pieces.append(source[cursor : closing + 1])
@@ -380,8 +388,14 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
         details={
             "max_iterations": max_iterations,
             "unrolled_iterations": unrolled_iterations,
+            "ir_approval": approved_loop_signatures is not None,
         },
     )
+
+
+def _loop_signature(variable, start, operator, stop):
+    """Canonical identity shared by semantic IR and generated MSL loop headers."""
+    return (str(variable), int(start), str(operator), int(stop))
 
 
 def _render_unrolled_loop(specification, body, max_iterations):

@@ -66,3 +66,10 @@ The legacy/default CUDA stream keeps single-submit behavior: its kernel batch is
 flushed immediately after dispatch. Explicit streams retain command-buffer
 batching. This isolates the optimization from the Stage 10 launch-only baseline
 while preserving measured gains for asynchronous explicit-stream workloads.
+
+## 8. Stage 16D - IR-approved source transforms
+
+The static-loop unroller now receives canonical loop signatures from semantic IR
+and matches those signatures against generated MSL headers. A textual loop is
+not transformed merely because another eligible loop exists elsewhere in the
+project; this prevents approval-count drift after code generation.

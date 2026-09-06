@@ -113,7 +113,7 @@ Built an end-to-end CUDA-to-Metal compiler and runtime prototype that ports educ
 - Nu afirma paritate de performanță cu NVIDIA/CUDA; proiectul însuși exclude această concluzie.
 - Nu publica un procent de speedup fără raportul benchmark, configurația hardware și workload-ul asociat.
 - Suita poate fi prezentată ca validată integral în mediul local curent: la 6 septembrie 2026, rularea cu Metal Toolchain 17A324 a produs **136 passed în 56,66 secunde**. Păstrează comanda și mediul atunci când citezi rezultatul.
-- Stage 16 adaugă batching pentru stream-uri explicite, pool bounded pentru staging buffers și cache persistent pentru semantic IR. Nu prezenta aceste rezultate ca benchmark universal; menționează Apple M4 Max și workload-ul măsurat.
+- Stage 16 adaugă batching pentru stream-uri explicite, pool bounded pentru staging buffers, cache persistent pentru semantic IR și aprobarea exactă a transformărilor de loop prin IR. Nu prezenta aceste rezultate ca benchmark universal; menționează Apple M4 Max și workload-ul măsurat.
 
 ## Evaluarea stării repository-ului înainte de publicare
 
