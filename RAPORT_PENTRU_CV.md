@@ -96,16 +96,19 @@ Tehnologii: Python 3, libclang/Clang AST, CUDA C++, Metal Shading Language, Obje
 **CudaMetalTransformer — compilator CUDA-to-Metal pentru Apple Silicon**  
 Am proiectat și implementat un prototip de compilator care transformă aplicații CUDA/C++ în Metal, folosind libclang, IR semantic tipat, validări conservative și un runtime nativ Objective-C++/Metal. Am realizat suport pentru proiecte multi-file, un driver compatibil cu un subset `nvcc`, memory/stream/event APIs, atomics, shared memory, warp intrinsics, un subset CUDA Graphs și integrare cu MPS pentru SGEMM. Am construit o suită pytest și benchmarkuri diferențiale cu quality gates și rapoarte CI.
 
+Rezultatul validat local include 136 teste pytest și 26/26 cazuri de compatibilitate CUDA executate corect; cache-ul semantic a redus timpul frontend de la 69,9 ms la 20,6 ms într-un proiect multi-file reprezentativ.
+
 ### Variantă pe bullets, în engleză
 
 - Designed and implemented a CUDA-to-Metal compiler prototype for Apple Silicon using Python, libclang, typed semantic IR, Metal Shading Language, and an Objective-C++ runtime.
 - Built multi-file device linking, source-mapped diagnostics, conservative memory/alias validation, configurable thread coarsening, and IR-guided optimization passes.
 - Implemented a partial CUDA runtime/toolchain compatibility layer covering memory management, streams, events, typed atomics, shared memory, selected warp intrinsics, CUDA Graphs, and cuBLAS SGEMM via MPS.
-- Developed an `nvcc`-compatible driver subset, Make integration, deterministic artifact manifests, build caching, structured metrics, pytest coverage, and macOS CI performance/correctness gates.
+- Developed an `nvcc`-compatible driver subset, Make integration, deterministic artifact manifests, build caching, structured metrics, and macOS CI performance/correctness gates; validated **136 pytest tests** and **26/26 CUDA compatibility cases**.
+- Reduced representative semantic-frontend latency from **69.9 ms to 20.6 ms (~70.5%)** with persistent IR caching and measured up to **14.964×** batched-vs-synchronous speedup on the Stage 10 medium workload.
 
 ### Descriere de o propoziție
 
-Built an end-to-end CUDA-to-Metal compiler and runtime prototype that ports educational GPU workloads to Apple Silicon through semantic analysis, typed IR, native Metal code generation, and CUDA API compatibility.
+Built an end-to-end CUDA-to-Metal compiler and runtime prototype that ports educational GPU workloads to Apple Silicon through semantic analysis, typed IR, native Metal code generation, and CUDA API compatibility, validated across 136 tests and 26 compatibility cases.
 
 ## Afirmații care trebuie evitate sau validate înainte de CV
 
