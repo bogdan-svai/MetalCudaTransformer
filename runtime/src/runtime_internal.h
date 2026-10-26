@@ -134,10 +134,13 @@ struct PendingCommand {
     void* host_destination = nullptr;
     std::size_t copy_size = 0;
     std::string operation;
+    std::vector<std::string> kernel_operations;
 };
 
 struct StreamState {
     id<MTLCommandQueue> queue = nil;
+    id<MTLCommandBuffer> active_kernel_batch = nil;
+    std::vector<std::string> active_kernel_operations;
     std::vector<PendingCommand> pending;
 };
 
@@ -148,17 +151,25 @@ public:
     bool create(id<MTLDevice> device, cudaStream_t* output, std::string& error);
     bool destroy(cudaStream_t stream, std::string& error);
     bool prepare(cudaStream_t stream, std::string& error);
+    id<MTLCommandBuffer> acquireKernelBatch(cudaStream_t stream, std::string& error);
+    bool recordKernel(cudaStream_t stream, const char* kernel_name, std::string& error);
+    bool flush(cudaStream_t stream, std::string& error);
     bool enqueue(cudaStream_t stream, PendingCommand command, std::string& error);
     bool synchronize(cudaStream_t stream, std::string& error);
     bool synchronizeAll(std::string& error);
+    id<MTLBuffer> acquireStaging(id<MTLDevice> device, std::size_t size);
     StreamState* get(cudaStream_t stream, std::string& error);
 
 private:
     bool synchronizeState(StreamState& state, std::string& error);
+    bool flushState(StreamState& state, std::string& error);
     bool synchronizeDefault(std::string& error);
     bool synchronizeExplicit(std::string& error);
+    void recycleStaging(id<MTLBuffer> buffer);
 
     std::unordered_map<cudaStream_t, StreamState> streams_;
+    std::vector<id<MTLBuffer>> staging_pool_;
+    std::size_t staging_pool_bytes_ = 0;
     std::uint64_t next_identifier_ = 1;
 };
 
@@ -203,7 +214,7 @@ class KernelDispatcher {
 public:
     static cudaError_t dispatch(
         id<MTLDevice> device,
-        id<MTLCommandQueue> queue,
+        id<MTLCommandBuffer> command,
         BufferRegistry& buffers,
         ArtifactCatalog& artifacts,
         PipelineCache& pipelines,
@@ -213,7 +224,6 @@ public:
         const KernelArgument* arguments,
         std::size_t argument_count,
         std::size_t shared_bytes,
-        id<MTLCommandBuffer> __strong& submitted,
         std::string& error
     );
 };
@@ -224,6 +234,7 @@ public:
         id<MTLDevice> device,
         id<MTLCommandQueue> queue,
         BufferRegistry& buffers,
+        StreamRegistry& streams,
         void* dst,
         const void* src,
         std::size_t count,

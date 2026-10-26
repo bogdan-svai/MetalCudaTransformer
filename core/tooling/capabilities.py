@@ -34,66 +34,66 @@ def capability_payload():
 
 def _syntax_capabilities():
     return [
-        _entry("cuda_triple_chevron_launch", "supported", "1", signatures=("kernel<<<grid, block[, shared[, stream]]>>>(args...)",)),
-        _entry("cudaLaunch_macro", "supported", "1", signatures=("cudaLaunch(kernel, grid, block, args...)",)),
-        _entry("__global__", "supported", "1", category="qualifier"),
-        _entry("__device__", "supported", "6", category="qualifier"),
-        _entry("__host__ __device__", "partial", "6", category="qualifier", notes="Supported for device-callable lowering; host overload parity is limited."),
-        _entry("__shared__", "supported", "8", category="memory"),
-        _entry("dynamic_shared_memory", "supported", "8", category="memory"),
-        _entry("dim3", "supported", "4", category="type"),
-        _entry("multi_file_project", "supported", "6", category="project"),
-        _entry("separate_compile_and_link", "supported", "7", category="driver"),
-        _entry("make_nvcc_shim", "supported", "9", category="driver"),
-        _entry("cuda_graphs", "partial", "14", category="runtime", notes="Explicit kernel/copy/memset graph nodes and single-stream capture are supported for the documented Stage 14 subset; broad update remains planned."),
-        _entry("warp_intrinsics", "partial", "14", category="device_intrinsic", notes="Stage 14 supports full-mask shuffle, shuffle_down, any/all, activemask, and syncwarp; ballot and dynamic masks remain unsupported."),
+        _entry("cuda_triple_chevron_launch", "supported", signatures=("kernel<<<grid, block[, shared[, stream]]>>>(args...)",)),
+        _entry("cudaLaunch_macro", "supported", signatures=("cudaLaunch(kernel, grid, block, args...)",)),
+        _entry("__global__", "supported", category="qualifier"),
+        _entry("__device__", "supported", category="qualifier"),
+        _entry("__host__ __device__", "partial", category="qualifier", notes="Supported for device-callable lowering; host overload parity is limited."),
+        _entry("__shared__", "supported", category="memory"),
+        _entry("dynamic_shared_memory", "supported", category="memory"),
+        _entry("dim3", "supported", category="type"),
+        _entry("multi_file_project", "supported", category="project"),
+        _entry("separate_compile_and_link", "supported", category="driver"),
+        _entry("make_nvcc_shim", "supported", category="driver"),
+        _entry("cuda_graphs", "partial", category="runtime", notes="Explicit kernel/copy/memset graph nodes and single-stream capture are supported for the documented subset; broad update remains planned."),
+        _entry("warp_intrinsics", "partial", category="device_intrinsic", notes="supports full-mask shuffle, shuffle_down, any/all, activemask, and syncwarp; ballot and dynamic masks remain unsupported."),
     ]
 
 
 def _runtime_apis():
     entries = [
-        ("cudaMalloc", "cudaError_t(void**, size_t)", "4"),
-        ("cudaFree", "cudaError_t(void*)", "4"),
-        ("cudaMemcpy", "cudaError_t(void*, const void*, size_t, cudaMemcpyKind)", "4"),
-        ("cudaMemcpyAsync", "cudaError_t(void*, const void*, size_t, cudaMemcpyKind, cudaStream_t)", "10"),
-        ("cudaMemset", "cudaError_t(void*, int, size_t)", "8"),
-        ("cudaMemsetAsync", "cudaError_t(void*, int, size_t, cudaStream_t)", "14"),
-        ("cudaDeviceSynchronize", "cudaError_t()", "4"),
-        ("cudaStreamCreate", "cudaError_t(cudaStream_t*)", "10"),
-        ("cudaStreamDestroy", "cudaError_t(cudaStream_t)", "10"),
-        ("cudaStreamSynchronize", "cudaError_t(cudaStream_t)", "10"),
-        ("cudaGetLastError", "cudaError_t()", "4"),
-        ("cudaPeekAtLastError", "cudaError_t()", "12"),
-        ("cudaGetErrorString", "const char*(cudaError_t)", "12"),
-        ("cudaGetDeviceCount", "cudaError_t(int*)", "12"),
-        ("cudaGetDevice", "cudaError_t(int*)", "12"),
-        ("cudaSetDevice", "cudaError_t(int)", "12"),
-        ("cudaGetDeviceProperties", "cudaError_t(cudaDeviceProp*, int)", "12"),
-        ("cudaDeviceReset", "cudaError_t()", "12"),
-        ("cudaEventCreate", "cudaError_t(cudaEvent_t*)", "12"),
-        ("cudaEventCreateWithFlags", "cudaError_t(cudaEvent_t*, unsigned int)", "12"),
-        ("cudaEventRecord", "cudaError_t(cudaEvent_t, cudaStream_t)", "12"),
-        ("cudaEventSynchronize", "cudaError_t(cudaEvent_t)", "12"),
-        ("cudaEventElapsedTime", "cudaError_t(float*, cudaEvent_t, cudaEvent_t)", "12"),
-        ("cudaEventDestroy", "cudaError_t(cudaEvent_t)", "12"),
-        ("cudaOccupancyMaxPotentialBlockSize", "cudaError_t(int*, int*, Kernel, size_t, int)", "12"),
-        ("cudaGraphCreate", "cudaError_t(cudaGraph_t*, unsigned int)", "14"),
-        ("cudaGraphDestroy", "cudaError_t(cudaGraph_t)", "14"),
-        ("cudaGraphInstantiate", "cudaError_t(cudaGraphExec_t*, cudaGraph_t, cudaGraphNode_t*, char*, size_t)", "14"),
-        ("cudaGraphExecDestroy", "cudaError_t(cudaGraphExec_t)", "14"),
-        ("cudaGraphLaunch", "cudaError_t(cudaGraphExec_t, cudaStream_t)", "14"),
-        ("cudaGraphAddKernelNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaKernelNodeParams*)", "14"),
-        ("cudaGraphAddMemcpyNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaMemcpy3DParms*)", "14"),
-        ("cudaGraphAddMemsetNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaMemsetParams*)", "14"),
-        ("cudaGraphAddDependencies", "cudaError_t(cudaGraph_t, const cudaGraphNode_t*, const cudaGraphNode_t*, size_t)", "14"),
-        ("cudaGraphGetNodes", "cudaError_t(cudaGraph_t, cudaGraphNode_t*, size_t*)", "14"),
-        ("cudaGraphGetRootNodes", "cudaError_t(cudaGraph_t, cudaGraphNode_t*, size_t*)", "14"),
-        ("cudaStreamBeginCapture", "cudaError_t(cudaStream_t, unsigned int)", "14"),
-        ("cudaStreamEndCapture", "cudaError_t(cudaStream_t, cudaGraph_t*)", "14"),
+        ("cudaMalloc", "cudaError_t(void**, size_t)"),
+        ("cudaFree", "cudaError_t(void*)"),
+        ("cudaMemcpy", "cudaError_t(void*, const void*, size_t, cudaMemcpyKind)"),
+        ("cudaMemcpyAsync", "cudaError_t(void*, const void*, size_t, cudaMemcpyKind, cudaStream_t)"),
+        ("cudaMemset", "cudaError_t(void*, int, size_t)"),
+        ("cudaMemsetAsync", "cudaError_t(void*, int, size_t, cudaStream_t)"),
+        ("cudaDeviceSynchronize", "cudaError_t()"),
+        ("cudaStreamCreate", "cudaError_t(cudaStream_t*)"),
+        ("cudaStreamDestroy", "cudaError_t(cudaStream_t)"),
+        ("cudaStreamSynchronize", "cudaError_t(cudaStream_t)"),
+        ("cudaGetLastError", "cudaError_t()"),
+        ("cudaPeekAtLastError", "cudaError_t()"),
+        ("cudaGetErrorString", "const char*(cudaError_t)"),
+        ("cudaGetDeviceCount", "cudaError_t(int*)"),
+        ("cudaGetDevice", "cudaError_t(int*)"),
+        ("cudaSetDevice", "cudaError_t(int)"),
+        ("cudaGetDeviceProperties", "cudaError_t(cudaDeviceProp*, int)"),
+        ("cudaDeviceReset", "cudaError_t()"),
+        ("cudaEventCreate", "cudaError_t(cudaEvent_t*)"),
+        ("cudaEventCreateWithFlags", "cudaError_t(cudaEvent_t*, unsigned int)"),
+        ("cudaEventRecord", "cudaError_t(cudaEvent_t, cudaStream_t)"),
+        ("cudaEventSynchronize", "cudaError_t(cudaEvent_t)"),
+        ("cudaEventElapsedTime", "cudaError_t(float*, cudaEvent_t, cudaEvent_t)"),
+        ("cudaEventDestroy", "cudaError_t(cudaEvent_t)"),
+        ("cudaOccupancyMaxPotentialBlockSize", "cudaError_t(int*, int*, Kernel, size_t, int)"),
+        ("cudaGraphCreate", "cudaError_t(cudaGraph_t*, unsigned int)"),
+        ("cudaGraphDestroy", "cudaError_t(cudaGraph_t)"),
+        ("cudaGraphInstantiate", "cudaError_t(cudaGraphExec_t*, cudaGraph_t, cudaGraphNode_t*, char*, size_t)"),
+        ("cudaGraphExecDestroy", "cudaError_t(cudaGraphExec_t)"),
+        ("cudaGraphLaunch", "cudaError_t(cudaGraphExec_t, cudaStream_t)"),
+        ("cudaGraphAddKernelNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaKernelNodeParams*)"),
+        ("cudaGraphAddMemcpyNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaMemcpy3DParms*)"),
+        ("cudaGraphAddMemsetNode", "cudaError_t(cudaGraphNode_t*, cudaGraph_t, const cudaGraphNode_t*, size_t, const cudaMemsetParams*)"),
+        ("cudaGraphAddDependencies", "cudaError_t(cudaGraph_t, const cudaGraphNode_t*, const cudaGraphNode_t*, size_t)"),
+        ("cudaGraphGetNodes", "cudaError_t(cudaGraph_t, cudaGraphNode_t*, size_t*)"),
+        ("cudaGraphGetRootNodes", "cudaError_t(cudaGraph_t, cudaGraphNode_t*, size_t*)"),
+        ("cudaStreamBeginCapture", "cudaError_t(cudaStream_t, unsigned int)"),
+        ("cudaStreamEndCapture", "cudaError_t(cudaStream_t, cudaGraph_t*)"),
     ]
     return [
-        _entry(name, _runtime_status(name), stage, category="runtime_api", signatures=(signature,))
-        for name, signature, stage in entries
+        _entry(name, _runtime_status(name), category="runtime_api", signatures=(signature,))
+        for name, signature in entries
     ]
 
 
@@ -117,7 +117,6 @@ def _warp_intrinsics():
             "name": name,
             "category": "warp_intrinsic",
             "status": supported.get(name, ("planned", [], [], [], ""))[0],
-            "stage": "14B",
             "supported_types": supported.get(name, ("planned", [], [], [], ""))[1],
             "supported_masks": supported.get(name, ("planned", [], [], [], ""))[2],
             "supported_widths": supported.get(name, ("planned", [], [], [], ""))[3],
@@ -145,7 +144,6 @@ def _graph_capabilities():
             "name": "explicit_kernel_graph_nodes",
             "category": "cuda_graph",
             "status": "partial",
-            "stage": "14C",
             "supported_node_kinds": ["kernel", "memcpy_1d", "memset_1d"],
             "supported_capture_modes": [],
             "unsupported": ["3d_memcpy_nodes", "2d_memset_nodes", "host_nodes", "broad_update"],
@@ -155,7 +153,6 @@ def _graph_capabilities():
             "name": "stream_capture",
             "category": "cuda_graph",
             "status": "partial",
-            "stage": "14C",
             "supported_node_kinds": ["kernel", "memcpy_1d", "memset_1d"],
             "supported_capture_modes": ["global", "thread_local", "relaxed"],
             "unsupported": ["nested_capture", "cross_stream_capture_dependencies", "host_nodes"],
@@ -170,7 +167,6 @@ def _intrinsics(registry):
             "name": name,
             "category": rule["category"],
             "status": "supported",
-            "stage": _intrinsic_stage(name),
             "capability": rule["capability"],
             "signatures": [
                 f"{name}/{arity}" for arity in rule.get("supported_arities", [])
@@ -184,37 +180,26 @@ def _intrinsics(registry):
 
 def _nvcc_flags():
     return [
-        _entry("-c", "supported", "7", category="nvcc_flag"),
-        _entry("-dc", "supported", "7", category="nvcc_flag"),
-        _entry("-o", "supported", "7", category="nvcc_flag"),
-        _entry("-I", "supported", "7", category="nvcc_flag"),
-        _entry("-D", "supported", "7", category="nvcc_flag"),
-        _entry("-U", "supported", "7", category="nvcc_flag"),
-        _entry("-O0/-O1/-O2/-O3", "supported", "7", category="nvcc_flag"),
-        _entry("-M/-MM/-MD/-MMD/-MF/-MT", "supported", "7", category="nvcc_flag"),
-        _entry("-L/-l", "supported", "11", category="nvcc_flag", notes="Supported for native link invocations."),
-        _entry("-Xcompiler", "partial", "7", category="nvcc_flag", notes="Only a conservative host flag allowlist is accepted."),
-        _entry("--generate-code/-gencode", "planned", "future", category="nvcc_flag"),
+        _entry("-c", "supported", category="nvcc_flag"),
+        _entry("-dc", "supported", category="nvcc_flag"),
+        _entry("-o", "supported", category="nvcc_flag"),
+        _entry("-I", "supported", category="nvcc_flag"),
+        _entry("-D", "supported", category="nvcc_flag"),
+        _entry("-U", "supported", category="nvcc_flag"),
+        _entry("-O0/-O1/-O2/-O3", "supported", category="nvcc_flag"),
+        _entry("-M/-MM/-MD/-MMD/-MF/-MT", "supported", category="nvcc_flag"),
+        _entry("-L/-l", "supported", category="nvcc_flag", notes="Supported for native link invocations."),
+        _entry("-Xcompiler", "partial", category="nvcc_flag", notes="Only a conservative host flag allowlist is accepted."),
+        _entry("--generate-code/-gencode", "planned", category="nvcc_flag"),
     ]
 
 
-def _entry(name, status, stage, category="syntax", signatures=(), notes=""):
+def _entry(name, status, category="syntax", signatures=(), notes=""):
     return {
         "name": name,
         "category": category,
         "status": status,
-        "stage": str(stage),
         "signatures": list(signatures),
         "target_requirements": ["macos", "metal"] if status in {"supported", "partial"} else [],
         "notes": notes,
     }
-
-
-def _intrinsic_stage(name):
-    if name.startswith("atomic"):
-        return "8"
-    if name == "memset":
-        return "8"
-    if name == "__syncthreads":
-        return "1"
-    return "4"

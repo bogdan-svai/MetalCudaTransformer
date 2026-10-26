@@ -1,1 +1,0 @@
-{"id":"13","name":"full shared atomic reduction","tier":"hard","program":"tests/cuda_suite/programs/atomic_reduction.cu","args":["1024","256"]}

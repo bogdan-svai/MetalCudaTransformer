@@ -1,9 +1,0 @@
-8 500000
-transformer
-cuda
-metal
-nonce
-throughput
-latency
-kernel
-cache

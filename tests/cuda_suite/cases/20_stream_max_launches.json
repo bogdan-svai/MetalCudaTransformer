@@ -1,1 +1,0 @@
-{"id":"20","name":"maximum stream launch stress","tier":"stress","program":"tests/cuda_suite/programs/stream_fanout.cu","args":["4","1000","65536"],"timeout_seconds":120}

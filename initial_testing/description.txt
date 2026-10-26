@@ -1,9 +1,0 @@
-The workflow for transforming raw CUDA source files into an interactive node graph operates through a specialized four-stage engine designed to map the hardware relationship between host code and parallel execution kernels.
-
-Initially, the engine performs Virtual Translation Unit Consolidation. Because host orchestration code and device execution layers exist in separate source units, parsing them in isolation strips away structural context. The compiler unifies these targets into a single virtual context, defining custom runtime stubs to maintain structural visibility across the entire source selection.
-
-Following consolidation, the system handles Abstract Syntax Tree Semantic Discovery. By leveraging libclang C++ bindings to traverse the syntax tree, the script scans recursively for function declarations. It extracts complete signatures, parameters, and variable types, classifying symbols cleanly into CPU host processes and GPU computation kernels.
-
-The third stage initiates a Hybrid Hardware-Dimension Extraction process. When a parallel launch envelope or wrapper is intercepted, a deep walk of the tree attempts to evaluate grid and block dimensions from underlying literal structures or variables. If macros or complex custom headers mask these parameters from standard parsing boundaries, a fallback lexical scanner immediately parses the source range to extract the exact execution configurations.
-
-Finally, Cross-File Graph Mapping automatically translates these discoveries into a live visual hierarchy. Files, host functions, and device kernels are mapped as interactive nodes interconnected by directed edges that represent code containment, host-to-device bridge calls, and cross-file execution pipelines.

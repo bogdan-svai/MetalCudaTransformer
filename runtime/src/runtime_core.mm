@@ -161,9 +161,12 @@ public:
         if (!streams_.prepare(stream, error)) {
             return fail(cudaErrorLaunchFailure, error);
         }
+        if (!streams_.flush(stream, error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
         mcu::runtime::PendingCommand pending;
         cudaError_t result = mcu::runtime::AsyncCopyDispatcher::submit(
-            context_.device(), state->queue, buffers_, dst, src, count, kind, pending, error
+            context_.device(), state->queue, buffers_, streams_, dst, src, count, kind, pending, error
         );
         if (result != cudaSuccess) {
             return fail(result, error);
@@ -760,7 +763,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         mcu::runtime::incrementRuntimeCounter("runtime_api_calls");
         mcu::runtime::incrementRuntimeCounter("graph_api_calls");
-        return fail(cudaErrorNotSupported, std::string(name) + " is planned for a later Stage 14 graph subset");
+        return fail(cudaErrorNotSupported, std::string(name) + " is not supported by the graph runtime");
     }
 
     cudaError_t dispatchKernelUnlocked(
@@ -787,20 +790,26 @@ public:
         if (!streams_.prepare(stream, error)) {
             return fail(cudaErrorLaunchFailure, error);
         }
-        id<MTLCommandBuffer> submitted = nil;
+        id<MTLCommandBuffer> batch = streams_.acquireKernelBatch(stream, error);
+        if (!batch) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
         cudaError_t result = mcu::runtime::KernelDispatcher::dispatch(
-            context_.device(), state->queue, buffers_, artifacts_, pipelines_, kernel_name,
-            grid, block, arguments, argument_count, shared_bytes, submitted, error
+            context_.device(), batch, buffers_, artifacts_, pipelines_, kernel_name,
+            grid, block, arguments, argument_count, shared_bytes, error
         );
         if (result != cudaSuccess) {
             return fail(result, error);
         }
-        mcu::runtime::PendingCommand pending;
-        pending.command = submitted;
-        pending.operation = std::string("kernel ") + kernel_name;
-        return streams_.enqueue(stream, std::move(pending), error)
-            ? succeed()
-            : fail(cudaErrorInvalidValue, error);
+        if (!streams_.recordKernel(stream, kernel_name, error)) {
+            return fail(cudaErrorInvalidValue, error);
+        }
+        // Keep the legacy default stream's single-submit behavior stable. Batching
+        // is enabled for explicit streams, where ordering is independent.
+        if (!stream && !streams_.flush(stream, error)) {
+            return fail(cudaErrorLaunchFailure, error);
+        }
+        return succeed();
     }
 
     static std::size_t scalarSize(NSString* type) {
@@ -1030,6 +1039,9 @@ public:
             return failCublas(CUBLAS_STATUS_INVALID_VALUE, cudaErrorInvalidValue, error);
         }
         if (!streams_.prepare(handle->stream, error)) {
+            return failCublas(CUBLAS_STATUS_EXECUTION_FAILED, cudaErrorLaunchFailure, error);
+        }
+        if (!streams_.flush(handle->stream, error)) {
             return failCublas(CUBLAS_STATUS_EXECUTION_FAILED, cudaErrorLaunchFailure, error);
         }
         id<MTLCommandBuffer> command = [state->queue commandBuffer];

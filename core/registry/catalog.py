@@ -24,8 +24,6 @@ class TranslationRegistry:
         for rule in self._rules.values():
             if rule.lowering_handler == "replace_token" and rule.target_symbol:
                 replacements[rule.source_symbol] = rule.target_symbol
-            elif rule.lowering_handler == "lower_threadgroup_barrier" and rule.target_symbol:
-                replacements[rule.source_symbol + "()"] = rule.target_symbol
         return replacements
 
 
@@ -45,7 +43,7 @@ def default_registry():
             supported_arities=(0,),
             capability="threadgroup_barrier",
             lowering_handler="lower_threadgroup_barrier",
-            target_symbol="threadgroup_barrier(mem_flags::mem_threadgroup)",
+            target_symbol="threadgroup_barrier",
         ),
         TranslationRule(
             source_symbol="__syncwarp",
@@ -53,7 +51,7 @@ def default_registry():
             supported_arities=(0, 1),
             capability="warp_sync",
             lowering_handler="lower_warp_intrinsic",
-            target_symbol="simdgroup_barrier(mem_flags::mem_none)",
+            target_symbol="mcu_warp_sync",
         ),
         TranslationRule(
             source_symbol="__activemask",
@@ -61,7 +59,7 @@ def default_registry():
             supported_arities=(0,),
             capability="warp_active_mask",
             lowering_handler="lower_warp_intrinsic",
-            target_symbol="0xffffffffu",
+            target_symbol="mcu_warp_active_mask",
         ),
         TranslationRule(
             source_symbol="__shfl_sync",

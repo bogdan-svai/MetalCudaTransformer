@@ -93,7 +93,7 @@ def build_native(
     if not metal_result["ok"]:
         return metal_result
 
-    transformed = _transform_host_sources(source_paths, host_directory)
+    transformed = _transform_host_sources(source_paths, host_directory, build_output.get("host_source_overrides"))
     if not transformed["sources"] and not native_objects:
         return _failure("host", "No host compilation units remained after CUDA kernel extraction.")
 
@@ -408,7 +408,8 @@ def _build_host_objects(
     return {"ok": True, "objects": objects}
 
 
-def _transform_host_sources(source_paths, host_directory):
+def _transform_host_sources(source_paths, host_directory, source_overrides=None):
+    source_overrides = source_overrides or {}
     if not source_paths:
         return {"sources": [], "headers": []}
     source_root = Path(os.path.commonpath([str(path.parent) for path in source_paths]))
@@ -417,7 +418,7 @@ def _transform_host_sources(source_paths, host_directory):
     for source in source_paths:
         if source.suffix not in HOST_SOURCE_EXTENSIONS | HEADER_EXTENSIONS:
             continue
-        transformed = transform_host_source(read_text(source))
+        transformed = transform_host_source(source_overrides.get(str(source.resolve()), read_text(source)))
         relative = source.relative_to(source_root)
         destination = host_directory / relative
         if source.suffix in HEADER_EXTENSIONS:
@@ -465,6 +466,7 @@ def _build_key(
             "sources": [(str(path), _file_hash(path)) for path in source_paths],
             "native_objects": [(str(path), _file_hash(path)) for path in native_objects],
             "metal": build_output["metal_source"],
+            "host_parallel": build_output.get("host_parallel_cache", {}),
             # Pass timings are diagnostic telemetry and vary on every invocation.
             # They must not invalidate an otherwise identical native executable.
             "routing": _stable_routing_for_cache(build_output),
@@ -571,6 +573,7 @@ def _result(ok, executable, output, host_sources, command, cache_hit, metallib, 
         "phase": "complete",
         "executable": str(executable),
         "build_directory": str(output),
+        "sidecar": str(output),
         "host_sources": [str(path) for path in host_sources],
         "command": command,
         "metal_command": metal_command or [],

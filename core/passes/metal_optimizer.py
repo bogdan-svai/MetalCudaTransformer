@@ -61,16 +61,20 @@ def optimize_metal_source(source, ir_analysis=None):
         "MCU_METAL_UNROLL_MAX", default=8, minimum=0, maximum=128
     )
     approved_loops = None
+    approved_loop_signatures = None
     if ir_analysis is not None:
-        approved_loops = sum(
-            1
+        approved_loop_signatures = {
+            _loop_signature(
+                item.get("variable"), item.get("start"), item.get("operator"), item.get("stop")
+            )
             for item in ir_analysis.get("static_loops", {}).get("candidates", [])
             if item.get("eligible")
-        )
+        }
     source, report = unroll_small_static_loops(
         source,
         max_iterations=unroll_limit,
         approved_loops=approved_loops,
+        approved_loop_signatures=approved_loop_signatures,
     )
     _record_pass_timing(report, pass_started)
     reports.append(report)
@@ -78,11 +82,11 @@ def optimize_metal_source(source, ir_analysis=None):
     if os.environ.get("MCU_METAL_SCALARIZE", "1") != "0":
         approved_arrays = None
         if ir_analysis is not None:
-            approved_arrays = sum(
-                1
+            approved_arrays = {
+                (item.get("function"), item.get("array"))
                 for item in ir_analysis.get("scalarizable_arrays", {}).get("candidates", [])
                 if item.get("eligible")
-            )
+            }
         source, report = scalarize_small_constant_index_arrays(
             source, approved_arrays=approved_arrays
         )
@@ -96,11 +100,11 @@ def optimize_metal_source(source, ir_analysis=None):
     if os.environ.get("MCU_METAL_RECURRENCE_FUSION", "0") != "0":
         approved_fusions = None
         if ir_analysis is not None:
-            approved_fusions = sum(
-                1
+            approved_fusions = {
+                (item.get("function"), item.get("array"))
                 for item in ir_analysis.get("recurrent_arrays", {}).get("candidates", [])
                 if item.get("eligible")
-            )
+            }
         source, report = fuse_recurrent_array_consumers(source, approved_fusions=approved_fusions)
     else:
         report = PassReport(
@@ -111,11 +115,23 @@ def optimize_metal_source(source, ir_analysis=None):
     _record_pass_timing(report, pass_started)
     reports.append(report)
     analysis_started = time.perf_counter()
+    # All analysis reports inspect the same final source. Share the structural
+    # function scan so each report does not rescan and rebalance every body.
+    analysis_functions = []
+    for function in _scan_metal_functions(source):
+        prepared = dict(function)
+        prepared["body"] = source[function["opening"] + 1 : function["closing"]]
+        prepared["arrays"] = list(_local_arrays(prepared["body"]))
+        prepared["indexed_accesses"] = {
+            array["name"]: _find_indexed_accesses(prepared["body"], array["name"])
+            for array in prepared["arrays"]
+        }
+        analysis_functions.append(prepared)
     analysis = {
-        "local_memory": estimate_local_memory_pressure(source),
-        "dynamic_array_candidates": analyze_dynamic_array_candidates(source),
-        "register_pressure": analyze_register_pressure(source),
-        "predicate_materialization": analyze_predicate_materialization(source),
+        "local_memory": estimate_local_memory_pressure(source, analysis_functions),
+        "dynamic_array_candidates": analyze_dynamic_array_candidates(source, analysis_functions),
+        "register_pressure": analyze_register_pressure(source, analysis_functions),
+        "predicate_materialization": analyze_predicate_materialization(source, analysis_functions),
     }
     analysis["timing_ms"] = round((time.perf_counter() - analysis_started) * 1000, 3)
     analysis["optimization_total_ms"] = round((time.perf_counter() - started) * 1000, 3)
@@ -154,7 +170,14 @@ def _scan_metal_functions(source):
         closing = find_matching_brace(source, opening)
         if closing is None or closing <= opening:
             break
-        functions.append({"start": start, "opening": opening, "closing": closing})
+        functions.append(
+            {
+                "start": start,
+                "opening": opening,
+                "closing": closing,
+                "name": _function_name(source, start, opening),
+            }
+        )
         cursor = closing + 1
     return functions
 
@@ -305,7 +328,9 @@ def rewrite_rotate_macros(source):
     )
 
 
-def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
+def unroll_small_static_loops(
+    source, max_iterations=8, approved_loops=None, approved_loop_signatures=None
+):
     cursor = 0
     pieces = []
     replacements = 0
@@ -342,7 +367,13 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
                 continue
             body = source[body_opening : body_end + 1]
             replacement, iterations = _render_unrolled_loop(specification, body, max_iterations)
-            if replacement is not None and (approved_loops is None or approved_loops > 0):
+            signature = _loop_signature(*specification)
+            approved = approved_loop_signatures is None or signature in approved_loop_signatures
+            if (
+                replacement is not None
+                and approved
+                and (approved_loops is None or approved_loops > 0)
+            ):
                 pieces.append(source[cursor:position])
                 pieces.append(replacement)
                 replacements += 1
@@ -361,7 +392,11 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
             continue
         body = source[opening + 1 : closing]
         replacement, iterations = _render_unrolled_loop(specification, body, max_iterations)
-        if replacement is not None and approved_loops is not None and approved_loops <= 0:
+        signature = _loop_signature(*specification)
+        approved = approved_loop_signatures is None or signature in approved_loop_signatures
+        if replacement is not None and (
+            not approved or (approved_loops is not None and approved_loops <= 0)
+        ):
             replacement, iterations = None, 0
         if replacement is None:
             pieces.append(source[cursor : closing + 1])
@@ -380,8 +415,14 @@ def unroll_small_static_loops(source, max_iterations=8, approved_loops=None):
         details={
             "max_iterations": max_iterations,
             "unrolled_iterations": unrolled_iterations,
+            "ir_approval": approved_loop_signatures is not None,
         },
     )
+
+
+def _loop_signature(variable, start, operator, stop):
+    """Canonical identity shared by semantic IR and generated MSL loop headers."""
+    return (str(variable), int(start), str(operator), int(stop))
 
 
 def _render_unrolled_loop(specification, body, max_iterations):
@@ -461,15 +502,21 @@ def scalarize_small_constant_index_arrays(source, max_elements=16, approved_arra
         if closing is None or closing <= opening:
             continue
         body = source[opening + 1 : closing]
-        rewritten, count, variables = _scalarize_arrays_in_body(body, max_elements)
-        if approved_arrays is not None and count > approved_arrays:
-            rewritten, count, variables = body, 0, 0
+        function_name = _function_name(source, function["start"], opening)
+        if function_name.endswith("_msl"):
+            function_name = function_name[: -len("_msl")]
+        approved_for_function = (
+            None
+            if approved_arrays is None
+            else {array for name, array in approved_arrays if name == function_name}
+        )
+        rewritten, count, variables = _scalarize_arrays_in_body(
+            body, max_elements, approved_for_function
+        )
         if count:
             replacements.append((opening + 1, closing, rewritten))
             arrays_replaced += count
             scalar_variables += variables
-            if approved_arrays is not None:
-                approved_arrays -= count
     for start, end, replacement in reversed(replacements):
         source = source[:start] + replacement + source[end:]
     return source, PassReport(
@@ -494,14 +541,18 @@ def fuse_recurrent_array_consumers(source, approved_fusions=None):
         if closing is None or closing <= opening:
             continue
         body = source[opening + 1 : closing]
-        rewritten, details, skipped = _fuse_recurrences_in_body(body)
-        if approved_fusions is not None and len(details) > approved_fusions:
-            details, skipped, rewritten = [], 0, body
+        function_name = _function_name(source, function["start"], opening)
+        if function_name.endswith("_msl"):
+            function_name = function_name[: -len("_msl")]
+        approved_for_function = (
+            None
+            if approved_fusions is None
+            else {array for name, array in approved_fusions if name == function_name}
+        )
+        rewritten, details, skipped = _fuse_recurrences_in_body(body, approved_for_function)
         if details:
             replacements.append((opening + 1, closing, rewritten))
             fused += len(details)
-            if approved_fusions is not None:
-                approved_fusions -= len(details)
             bytes_saved += sum(item["bytes_saved"] for item in details)
             skipped_high_pressure += skipped
     for start, end, replacement in reversed(replacements):
@@ -518,17 +569,21 @@ def fuse_recurrent_array_consumers(source, approved_fusions=None):
     )
 
 
-def _fuse_recurrences_in_body(body):
+def _fuse_recurrences_in_body(body, approved_arrays=None):
     details = []
     skipped_high_pressure = 0
+    excluded_arrays = set()
     while True:
-        fused = _find_recurrent_consumer_fusion(body)
+        fused = _find_recurrent_consumer_fusion(body, excluded_arrays)
         if fused is None:
             break
         if fused == "high_pressure":
             skipped_high_pressure += 1
             break
         start, end, replacement, array_name, original_elements, window, type_name = fused
+        if approved_arrays is not None and array_name not in approved_arrays:
+            excluded_arrays.add(array_name)
+            continue
         body = body[:start] + replacement + body[end:]
         body = _shrink_first_array_declaration(body, array_name, original_elements, window)
         details.append(
@@ -542,13 +597,18 @@ def _fuse_recurrences_in_body(body):
     return body, details, skipped_high_pressure
 
 
-def _find_recurrent_consumer_fusion(body):
+def _find_recurrent_consumer_fusion(body, excluded_arrays=None):
+    excluded_arrays = excluded_arrays or set()
     arrays = {array["name"]: array for array in _local_arrays(body)}
     for candidate in _braced_recurrence_candidates(body):
+        if candidate.get("array_name") in excluded_arrays:
+            continue
         fused = _try_recurrent_consumer_fusion(body, arrays, candidate)
         if fused is not None:
             return fused
     for recurrence in _unbraced_recurrence_candidates(body):
+        if recurrence.get("array_name") in excluded_arrays:
+            continue
         candidate = {
             "start": recurrence["start"],
             "end": recurrence["end"],
@@ -940,7 +1000,7 @@ def _indent_block(text, indent):
     return "\n".join(f"{indent}{line}" if line.strip() else line for line in text.splitlines())
 
 
-def _scalarize_arrays_in_body(body, max_elements):
+def _scalarize_arrays_in_body(body, max_elements, approved_arrays=None):
     arrays_replaced = 0
     scalar_variables = 0
     while True:
@@ -950,6 +1010,8 @@ def _scalarize_arrays_in_body(body, max_elements):
             if not _is_known_local_type(type_name):
                 continue
             name = declaration["name"]
+            if approved_arrays is not None and name not in approved_arrays:
+                continue
             size = declaration["size"]
             if size <= 0 or size > max_elements:
                 continue
@@ -1106,17 +1168,20 @@ def _find_indexed_accesses(source, name):
     return accesses
 
 
-def estimate_local_memory_pressure(source):
+def estimate_local_memory_pressure(source, functions=None):
     summaries = []
-    for function in _scan_metal_functions(source):
+    for function in _scan_metal_functions(source) if functions is None else functions:
         opening, closing = function["opening"], function["closing"]
         if closing is None or closing <= opening:
             continue
-        name = _function_name(source, function["start"], opening)
-        body = source[opening + 1 : closing]
+        name = function.get("name") or _function_name(source, function["start"], opening)
+        body = function.get("body") or source[opening + 1 : closing]
         arrays = []
         total_bytes = 0
-        for array in _local_arrays(body):
+        source_arrays = function.get("arrays")
+        if source_arrays is None:
+            source_arrays = _local_arrays(body)
+        for array in source_arrays:
             total_bytes += array["bytes"]
             arrays.append(array)
         if arrays:
@@ -1137,16 +1202,24 @@ def estimate_local_memory_pressure(source):
     }
 
 
-def analyze_dynamic_array_candidates(source):
+def analyze_dynamic_array_candidates(source, functions=None):
     candidates = []
-    for function in _scan_metal_functions(source):
+    for function in _scan_metal_functions(source) if functions is None else functions:
         opening, closing = function["opening"], function["closing"]
         if closing is None or closing <= opening:
             continue
-        function_name = _function_name(source, function["start"], opening)
-        body = source[opening + 1 : closing]
-        for array in _local_arrays(body):
-            details = _dynamic_array_details(body, array["name"], array["elements"])
+        function_name = function.get("name") or _function_name(source, function["start"], opening)
+        body = function.get("body") or source[opening + 1 : closing]
+        source_arrays = function.get("arrays")
+        if source_arrays is None:
+            source_arrays = _local_arrays(body)
+        for array in source_arrays:
+            details = _dynamic_array_details(
+                body,
+                array["name"],
+                array["elements"],
+                function.get("indexed_accesses", {}).get(array["name"]),
+            )
             if details:
                 candidates.append(
                     {
@@ -1166,7 +1239,7 @@ def analyze_dynamic_array_candidates(source):
     }
 
 
-def analyze_register_pressure(source):
+def analyze_register_pressure(source, functions=None):
     """Conservative source-level pressure signal used by optimization cost models.
 
     This is deliberately an estimate, not a hardware register count. It combines
@@ -1174,17 +1247,21 @@ def analyze_register_pressure(source):
     count so risky transforms can be gated consistently across workloads.
     """
     summaries = []
-    for function in _scan_metal_functions(source):
+    for function in _scan_metal_functions(source) if functions is None else functions:
         opening, closing = function["opening"], function["closing"]
         if closing is None or closing <= opening:
             continue
-        name = _function_name(source, function["start"], opening)
-        body = source[opening + 1 : closing]
-        arrays = list(_local_arrays(body))
+        name = function.get("name") or _function_name(source, function["start"], opening)
+        body = function.get("body") or source[opening + 1 : closing]
+        arrays = function.get("arrays")
+        if arrays is None:
+            arrays = list(_local_arrays(body))
         local_bytes = sum(item["bytes"] for item in arrays)
         dynamic_accesses = 0
         for array in arrays:
-            uses = _find_indexed_accesses(body, array["name"])
+            uses = function.get("indexed_accesses", {}).get(array["name"])
+            if uses is None:
+                uses = _find_indexed_accesses(body, array["name"])
             dynamic_accesses += sum(1 for _s, _e, index in uses if not index.strip().isdigit())
         loops = len(re.findall(r"\b(?:for|while)\s*\(", body))
         calls = len(re.findall(r"\b[A-Za-z_]\w*\s*\([^;{}]*\)", body))
@@ -1204,20 +1281,23 @@ def analyze_register_pressure(source):
     return {"functions": summaries[:32]}
 
 
-def analyze_predicate_materialization(source):
+def analyze_predicate_materialization(source, functions=None):
     """Find local buffers materialized by a call and consumed only by a predicate.
 
     The report is intentionally analysis-only for now. A later IR pass can prove
     purity/alias safety and replace these buffers with a predicate-returning form.
     """
     candidates = []
-    for function in _scan_metal_functions(source):
+    for function in _scan_metal_functions(source) if functions is None else functions:
         opening, closing = function["opening"], function["closing"]
         if closing is None or closing <= opening:
             continue
-        body = source[opening + 1 : closing]
-        function_name = _function_name(source, function["start"], opening)
-        arrays = {item["name"] for item in _local_arrays(body)}
+        body = function.get("body") or source[opening + 1 : closing]
+        function_name = function.get("name") or _function_name(source, function["start"], opening)
+        arrays = function.get("arrays")
+        if arrays is None:
+            arrays = list(_local_arrays(body))
+        arrays = {item["name"] for item in arrays}
         for array_name in arrays:
             producer = _find_array_producer_call(body, array_name)
             if producer is None:
@@ -1295,8 +1375,8 @@ def _find_array_predicate(body, array_name):
         cursor = keyword + 2
 
 
-def _dynamic_array_details(body, name, elements):
-    uses = _find_indexed_accesses(body, name)
+def _dynamic_array_details(body, name, elements, uses=None):
+    uses = _find_indexed_accesses(body, name) if uses is None else uses
     if not uses:
         return None
     indices = []
@@ -1308,7 +1388,7 @@ def _dynamic_array_details(body, name, elements):
             dynamic_indices.append(index)
     if not dynamic_indices:
         return None
-    recurrence = _recurrence_details(body, name)
+    recurrence = _recurrence_details(body, name, uses)
     unique_indices = sorted(set(dynamic_indices))
     result = {
         "dynamic_indices": unique_indices[:12],
@@ -1331,9 +1411,10 @@ def _dynamic_array_details(body, name, elements):
     return result
 
 
-def _recurrence_details(body, name):
+def _recurrence_details(body, name, uses=None):
     best = None
-    for start, end, raw_index in _find_indexed_accesses(body, name):
+    uses = _find_indexed_accesses(body, name) if uses is None else uses
+    for start, end, raw_index in uses:
         var = raw_index.strip()
         if not var.isidentifier():
             continue

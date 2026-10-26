@@ -1,1 +1,0 @@
-{"id":"10","name":"ten batched launches","tier":"medium","program":"examples/stage10_multilaunch/main.cu","args":["10"],"expected":"result=10"}

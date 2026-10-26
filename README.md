@@ -1,74 +1,104 @@
 # CudaMetalTransformer
 
-CudaMetalTransformer is a CUDA-to-Metal compiler prototype for running
-educational GPU workloads on Apple Silicon. It is designed for universities
-that need a small, inspectable alternative to a full CUDA lab environment.
+Compile a supported subset of CUDA C++ to Metal and run it on Apple Silicon.
+The compiler uses Python and libclang. The runtime uses Objective-C++ and Metal.
 
-The project is an AST/IR compiler, not a collection of source substitutions:
+## Requirements
 
-```text
-CUDA → libclang AST → typed IR → validated optimization passes → Metal lowering
-```
+macOS on Apple Silicon, Python 3.11 or later, and Xcode with the Metal Toolchain.
+Use a native arm64 terminal. NVIDIA hardware and the CUDA toolkit are not required.
 
-The semantic IR tracks device functions, calls, pointer aliases, memory
-effects, address spaces and statement structure. Optimizations are conservative
-and produce structured reports. `MCU_SEMANTIC_STRICT=1` disables semantic
-fallback when complete libclang information is unavailable.
+## Install
 
-## Quick start
+See [HOW_TO_INSTALL.md](HOW_TO_INSTALL.md) for setup and troubleshooting.
+
+Open a terminal in this directory:
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-./mcu check examples/complex_app/app/main.cpp
+./install.sh --check
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+mcu --help
 ```
 
-On macOS with the Metal toolchain installed:
+The installer checks the platform and compilers, creates `.venv`, installs the
+Python dependencies, checks libclang, and adds `mcu` to `~/.local/bin`.
+Keep this directory in place: the installed command points to it. Add the PATH
+line to `~/.zshrc` to use the command in new terminals.
+
+To select a Python interpreter or command directory:
 
 ```bash
-TOOLCHAINS=com.apple.dt.toolchain.Metal.32023 make verify
+MCU_PYTHON=python3.12 MCU_INSTALL_DIR="$HOME/.local/bin" ./install.sh
 ```
 
-## Benchmarks
-
-The product suite covers STREAM, HotSpot, reduction and histogram kernels.
-Run a reproducible optimizer matrix with correctness and regression gates:
+If the Metal compiler is unavailable, finish Xcode setup and install its toolchain:
 
 ```bash
-python scripts/benchmark_optimization_suite.py \
-  --only hotspot --samples 5 --warmups 3 \
-  --output optimizer-quality-gate.json
-python scripts/render_benchmark_report.py \
-  optimizer-quality-gate.json --output optimizer-quality-gate.md
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+xcodebuild -runFirstLaunch
+xcodebuild -downloadComponent MetalToolchain
 ```
 
-The matrix compares baseline, constant promotion, loop unrolling and the
-combined safe configuration. The quality gate fails when a variant fails
-correctness or regresses beyond the configured threshold (`5%` locally;
-CI uses `20%` to account for shared runner variance).
+## Use
 
-Benchmark numbers are machine- and workload-specific. They are not presented
-as CUDA/NVIDIA parity claims; the suite reports the actual Metal runtime and
-correctness result on the host where it runs.
-
-## Development quality gates
+Run MCU from your CUDA project directory:
 
 ```bash
-python -m pytest -q
-make verify
+mcu check .
+mcu analyze . --json
+mcu build . --native --output .mcu/app
 ```
 
-CI runs the full verification suite, a reduced optimizer benchmark, and stores
-the JSON/Markdown reports as build artifacts.
+`check` reports source and launch constraints. It does not prove that the program
+compiles or produces correct results. `analyze` returns a compatibility report.
+`build --native` generates Metal and host code and builds an executable in the
+output directory. Native execution requires host code that allocates buffers and
+launches the kernels. Run the generated executable with your program's arguments.
 
-## Current limitations
+You can also pass a single source file:
 
-Some compatibility parsing and legacy lowering paths still use textual
-scanning. They are isolated behind the semantic frontend and cannot make
-optimization or memory-safety decisions. The migration target is complete
-Statement IR lowering, followed by removal of the compatibility parser from
-device compilation.
+```bash
+mcu check kernels.cu
+mcu build kernels.cu
+```
 
-See [planning/Architecture.md](planning/Architecture.md) for the compiler
-contracts and migration order.
+Without `--native`, `build` writes generated sources and metadata to
+`mcu_artifacts.zip`. The source files are preserved.
 
+For compilation through the NVCC compatibility driver:
+
+```bash
+mcu compile main.cu -o .mcu/app
+./.mcu/app
+```
+
+Run `mcu capabilities --json` to inspect the supported features.
+Use `MCU_CACHE_DIR` to change the compiler cache directory.
+
+## Scope
+
+Supported subsets include device functions, shared memory, atomics, streams,
+events, warp intrinsics and CUDA graphs. A limited cuBLAS SGEMM adapter uses
+Metal Performance Shaders. Arbitrary CUDA C++, PTX and general CUDA libraries
+are not supported. Some lowering paths still inspect source text.
+
+Experimental host loop offload is disabled by default. Inspect it with
+`mcu analyze . --auto-parallel=report`. The `build --native --auto-parallel=safe`
+option supports a narrow set of independent loops over local unsigned arrays.
+It does not select CPU or GPU execution based on measured performance and may
+slow down small loops. External pointers, reductions and searches are not covered.
+
+## Source layout
+
+`cli/` contains the command interface. `core/` contains parsing, IR, validation,
+code generation and build coordination. `runtime/` contains the native runtime.
+`scripts/` contains command installation and removal.
+
+## Uninstall
+
+```bash
+./scripts/uninstall_mcu.sh
+```
+
+This removes the installed command. The source directory and its `.venv` remain.

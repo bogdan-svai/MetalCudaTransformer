@@ -5,7 +5,7 @@ SUPPORTED_FACTORS = (2, 4, 8)
 THREADGROUP_LIMIT = 1024
 
 
-def plan_coarsening(metadata, requested_factor=None):
+def plan_coarsening(metadata, requested_factor=None, semantic_project=None):
     strict_requested = True
     if isinstance(requested_factor, dict):
         strict_requested = requested_factor.get("strict", True)
@@ -28,39 +28,49 @@ def plan_coarsening(metadata, requested_factor=None):
         needs_optimization = bool(requested_factor and requested_factor > 1) or any(
             _volume(block) > THREADGROUP_LIMIT for block in known_blocks
         )
-        synchronized = "__shared__" in kernel.get("body", "") or "__syncthreads" in kernel.get("body", "")
+        synchronized = _kernel_is_synchronized(kernel, semantic_project)
         if synchronized and needs_optimization:
-            diagnostics.append(_diagnostic(
-                "CoarseningSharedKernelUnsupported",
-                f"Kernel '{name}' uses shared memory or barriers and cannot be coarsened safely.",
-                launches[0] if launches else kernel,
-            ))
+            diagnostics.append(
+                _diagnostic(
+                    "CoarseningSharedKernelUnsupported",
+                    f"Kernel '{name}' uses shared memory or barriers and cannot be coarsened safely.",
+                    launches[0] if launches else kernel,
+                )
+            )
             continue
 
         if len(unique_blocks) > 1 and needs_optimization:
-            diagnostics.append(_diagnostic(
-                "IncompatibleCoarseningPlan",
-                f"Kernel '{name}' is launched with incompatible static block dimensions.",
-                launches[0] if launches else kernel,
-            ))
+            diagnostics.append(
+                _diagnostic(
+                    "IncompatibleCoarseningPlan",
+                    f"Kernel '{name}' is launched with incompatible static block dimensions.",
+                    launches[0] if launches else kernel,
+                )
+            )
             continue
 
         original_block = known_blocks[0] if len(unique_blocks) == 1 else None
         factor = requested_factor or 1
         mode = "manual" if requested_factor and requested_factor > 1 else "none"
 
-        if requested_factor is None and original_block and _volume(original_block) > THREADGROUP_LIMIT:
+        if (
+            requested_factor is None
+            and original_block
+            and _volume(original_block) > THREADGROUP_LIMIT
+        ):
             factor = _automatic_factor(original_block)
             mode = "auto"
             if factor is None:
-                diagnostics.append(_diagnostic(
-                    "UnsupportedCoarseningGeometry",
-                    (
-                        f"Kernel '{name}' block {list(original_block)} cannot be reduced below "
-                        f"{THREADGROUP_LIMIT} threads with supported X-axis factors."
-                    ),
-                    launches[0],
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "UnsupportedCoarseningGeometry",
+                        (
+                            f"Kernel '{name}' block {list(original_block)} cannot be reduced below "
+                            f"{THREADGROUP_LIMIT} threads with supported X-axis factors."
+                        ),
+                        launches[0],
+                    )
+                )
                 continue
 
         if requested_factor and requested_factor > 1:
@@ -68,36 +78,42 @@ def plan_coarsening(metadata, requested_factor=None):
                 if not strict_requested:
                     plans[name] = _default_plan(original_block)
                     continue
-                diagnostics.append(_diagnostic(
-                    "UnresolvedCoarseningGeometry",
-                    f"Kernel '{name}' requires a static launch block for manual coarsening.",
-                    kernel,
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "UnresolvedCoarseningGeometry",
+                        f"Kernel '{name}' requires a static launch block for manual coarsening.",
+                        kernel,
+                    )
+                )
                 continue
             if original_block[0] % requested_factor != 0:
                 if not strict_requested:
                     plans[name] = _default_plan(original_block)
                     continue
-                diagnostics.append(_diagnostic(
-                    "NonDivisibleCoarseningFactor",
-                    (
-                        f"Kernel '{name}' block.x={original_block[0]} is not divisible by "
-                        f"coarsening factor {requested_factor}."
-                    ),
-                    launches[0],
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "NonDivisibleCoarseningFactor",
+                        (
+                            f"Kernel '{name}' block.x={original_block[0]} is not divisible by "
+                            f"coarsening factor {requested_factor}."
+                        ),
+                        launches[0],
+                    )
+                )
                 continue
 
         physical_block = _physical_block(original_block, factor)
         if physical_block and _volume(physical_block) > THREADGROUP_LIMIT:
-            diagnostics.append(_diagnostic(
-                "PhysicalBlockLimitExceeded",
-                (
-                    f"Kernel '{name}' physical block {list(physical_block)} still exceeds "
-                    f"{THREADGROUP_LIMIT} threads."
-                ),
-                launches[0],
-            ))
+            diagnostics.append(
+                _diagnostic(
+                    "PhysicalBlockLimitExceeded",
+                    (
+                        f"Kernel '{name}' physical block {list(physical_block)} still exceeds "
+                        f"{THREADGROUP_LIMIT} threads."
+                    ),
+                    launches[0],
+                )
+            )
             continue
 
         if original_block and _volume(original_block) > THREADGROUP_LIMIT and factor > 1:
@@ -123,6 +139,19 @@ def _static_block(block):
     if len(dims) != 3 or not all(isinstance(value, int) for value in dims):
         return None
     return tuple(dims)
+
+
+def _kernel_is_synchronized(kernel, semantic_project):
+    if semantic_project is None:
+        body = kernel.get("body", "")
+        return "__shared__" in body or "__syncthreads" in body
+    functions = semantic_project.functions_named(kernel["name"])
+    function = next((item for item in functions if item.kind == "KERNEL"), None)
+    if function is None:
+        return False
+    return bool(function.effects.get("uses_barrier")) or any(
+        item.storage == "threadgroup" for item in function.local_objects
+    )
 
 
 def _automatic_factor(block):

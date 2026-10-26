@@ -1,5 +1,7 @@
 """Typed optimization preconditions derived from the semantic statement IR."""
 
+import re
+
 
 def analyze_static_loops(project, max_iterations=128):
     candidates = []
@@ -7,7 +9,7 @@ def analyze_static_loops(project, max_iterations=128):
         for statement in function.statements:
             if statement.kind != "FOR_STMT":
                 continue
-            parsed = _parse_for_tokens(statement.text)
+            parsed = _parse_for_ir(statement.attributes)
             if parsed is None:
                 candidates.append(
                     {
@@ -75,11 +77,15 @@ def analyze_scalarizable_arrays(project, max_elements=16):
         1 for item in analyze_static_loops(project)["candidates"] if item.get("eligible")
     )
     for function in project.functions.values():
-        statement_text = "\n".join(item.text for item in function.statements)
         for local in function.local_objects:
             if not local.array_extent or local.array_extent > max_elements:
                 continue
-            accesses = _indexed_accesses(statement_text, local.name)
+            accesses = [
+                access.get("index", "")
+                for statement in function.statements
+                for access in statement.attributes.get("array_accesses", [])
+                if access.get("array") == local.name
+            ]
             if not accesses:
                 continue
             # The declaration itself is represented as `name[extent]` in the
@@ -278,34 +284,32 @@ def _indexed_accesses(source, name):
         cursor = closing + 1
 
 
-def _parse_for_tokens(text):
-    normalized = text
-    for token in "(){};=<>+":
-        normalized = normalized.replace(token, f" {token} ")
-    tokens = normalized.split()
-    if not tokens or tokens[0] != "for":
+def _parse_for_ir(attributes):
+    """Parse a static ``for`` header from semantic loop fields.
+
+    The frontend has already split the header at top-level semicolons, so this
+    avoids rescanning the complete statement text.  Missing fields are kept
+    compatible with cached/legacy IR by returning ``None``.
+    """
+    init = str(attributes.get("loop_init", "")).strip().rstrip(";").strip()
+    condition = str(attributes.get("loop_condition", "")).strip().rstrip(";").strip()
+    update = str(attributes.get("loop_update", "")).strip().rstrip(";").strip()
+    if not init or not condition or not update:
         return None
-    try:
-        open_index = tokens.index("(")
-        close_index = len(tokens) - 1 - tokens[::-1].index(")")
-        header = tokens[open_index + 1 : close_index]
-        first = header.index(";")
-        second = header.index(";", first + 1)
-        init, condition, increment = (
-            header[:first],
-            header[first + 1 : second],
-            header[second + 1 :],
-        )
-        equals = init.index("=")
-        variable = init[equals - 1]
-        start = int(init[equals + 1])
-        operator = "<=" if "<=" in " ".join(condition) else "<"
-        op_index = condition.index(operator[0])
-        if operator == "<=" and condition[op_index + 1] != "=":
-            return None
-        stop = int(condition[op_index + len(operator)])
-        if increment not in (["+", "+", variable], [variable, "+", "+"]):
-            return None
-        return variable, start, operator, stop
-    except (ValueError, IndexError):
+    init_match = re.search(r"\b([A-Za-z_]\w*)\s*=\s*(-?\d+)\s*$", init)
+    condition_match = re.fullmatch(r"([A-Za-z_]\w*)\s*(<=|<)\s*(-?\d+)", condition)
+    update_match = re.fullmatch(r"(?:\+\+\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*\+\+)", update)
+    if not init_match or not condition_match or not update_match:
         return None
+    variable = init_match.group(1)
+    if condition_match.group(1) != variable:
+        return None
+    increment_variable = update_match.group(1) or update_match.group(2)
+    if increment_variable != variable:
+        return None
+    return (
+        variable,
+        int(init_match.group(2)),
+        condition_match.group(2),
+        int(condition_match.group(3)),
+    )

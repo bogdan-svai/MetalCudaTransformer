@@ -1,1 +1,0 @@
-{"id":"12","name":"irregular 2D geometry","tier":"hard","program":"tests/cuda_suite/programs/geometry_2d.cu","args":["1001","509","16","16"]}

@@ -22,10 +22,10 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 
-cat > "$TARGET" <<EOF
-#!/usr/bin/env bash
-exec "$PYTHON_BIN" "$REPO_ROOT/mcu" "\$@"
-EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'exec %q %q "$@"\n' "$PYTHON_BIN" "$REPO_ROOT/mcu"
+} > "$TARGET"
 
 chmod +x "$TARGET"
 

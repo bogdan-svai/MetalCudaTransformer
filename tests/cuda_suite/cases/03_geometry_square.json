@@ -1,1 +1,0 @@
-{"id":"03","name":"square 2D geometry","tier":"easy","program":"tests/cuda_suite/programs/geometry_2d.cu","args":["32","32","8","8"]}

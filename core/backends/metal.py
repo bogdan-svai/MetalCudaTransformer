@@ -57,9 +57,9 @@ def transpile(metadata, coarsening_plans=None, semantic_project=None, link_plan=
             "line": kernel.get("body_line") or kernel.get("line"),
         }
         factor = optimization["coarsening_factor"]
-        raw_body = kernel.get("body", "")
+        raw_body = semantic_kernel.body if semantic_kernel else kernel.get("body", "")
         if semantic_kernel and link_plan:
-            raw_body = rewrite_kernel_calls(raw_body, semantic_kernel, link_plan)
+            raw_body = rewrite_kernel_calls(semantic_kernel.body, semantic_kernel, link_plan)
         atomic_locals = (
             link_plan.atomic_locals.get(semantic_kernel.symbol_id, {})
             if semantic_kernel and link_plan

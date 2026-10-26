@@ -1,6 +1,6 @@
 import re
 
-from core.frontend.regex_parser import find_matching_delimiter, split_top_level
+from core.frontend.regex_parser import find_matching_delimiter
 
 TYPE_REPLACEMENTS = [
     (r"\bunsigned\s+long\s+long\b", "ulong"),
@@ -33,7 +33,7 @@ def render_device_components(project, plan):
             function,
             variant.parameter_address_spaces,
         )
-        body = mark_readonly_literal_arrays(body)
+        body = mark_readonly_literal_arrays(body, function)
         helpers.append(
             _render_helper(
                 function,
@@ -51,11 +51,11 @@ def rewrite_kernel_calls(body, kernel, plan):
     )
     rewritten = rewrite_device_calls(body, kernel, spaces, plan)
     rewritten = rewrite_address_space_syntax(rewritten, kernel, spaces)
-    return mark_readonly_literal_arrays(rewritten)
+    return mark_readonly_literal_arrays(rewritten, kernel)
 
 
 def rewrite_device_calls(body, function, spaces, plan):
-    targets_by_name = {}
+    edits = []
     for call in function.calls:
         key = (
             function.symbol_id,
@@ -67,118 +67,82 @@ def rewrite_device_calls(body, function, spaces, plan):
         )
         target = plan.call_targets.get(key)
         if target:
-            targets_by_name.setdefault(call.callee_name, []).append(target)
+            edits.append((call, target))
 
-    rewritten = body
-    for name, targets in targets_by_name.items():
-        rewritten = _replace_call_identifiers(rewritten, name, targets)
-
-    for name, rule in plan.intrinsics_used.items():
-        if rule.get("lowering_handler") == "lower_typed_atomic":
-            rewritten = _rewrite_atomic_calls(rewritten, name, rule["target_symbol"])
-            continue
-        if rule.get("lowering_handler") == "lower_warp_intrinsic":
-            rewritten = _rewrite_warp_intrinsic_calls(rewritten, name, rule["target_symbol"])
+    suffixes = []
+    for call in function.calls:
+        key = (
+            function.symbol_id,
+            call.callee_name,
+            call.source.file,
+            call.source.line,
+            call.source.column,
+        )
+        rule = plan.intrinsic_calls.get(key)
+        if not rule:
             continue
         target = rule.get("target_symbol")
+        handler = rule.get("lowering_handler")
+        suffix = ""
+        if handler == "lower_typed_atomic":
+            if call.callee_name == "atomicCAS":
+                target = "mcu_atomic_cas"
+            else:
+                suffix = ", memory_order_relaxed"
+        elif handler == "lower_threadgroup_barrier":
+            suffix = "mem_flags::mem_threadgroup"
+        elif handler == "lower_warp_intrinsic" and call.callee_name in {
+            "__shfl_sync",
+            "__shfl_down_sync",
+        }:
+            suffix = (
+                ", 32" if call.explicit_argument_count == 3 else ""
+            ) + ", thread_index_in_simdgroup"
         if target:
-            if rule.get("lowering_handler") == "lower_threadgroup_barrier":
-                rewritten = re.sub(
-                    rf"\b{re.escape(name)}\s*\(\s*\)",
-                    target,
-                    rewritten,
-                )
-                continue
-            rewritten = _replace_call_identifiers(rewritten, name, [target])
+            edits.append((call, target))
+        if suffix:
+            suffixes.append((call, suffix))
+    rewritten = _apply_call_edits(body, function, edits, suffixes)
+
     return _rewrite_atomic_loads(
         rewritten,
         plan.atomic_parameters.get(function.symbol_id, {}),
     )
 
 
-def _replace_call_identifiers(source, name, replacements):
-    """Rewrite call identifiers using a lexical scanner, not regular expressions."""
-    if not name or not replacements:
-        return source
+def _apply_call_edits(body, function, edits, argument_suffixes=()):
+    """Apply validated original-source byte ranges in one reconstruction."""
+    if not edits and not argument_suffixes:
+        return body
+    if body != function.body or function.body_range is None:
+        raise ValueError("Call edits require the unchanged original function body")
+    data = body.encode("utf-8")
+    ranges = []
+    for call, target in edits:
+        span = call.identifier_range
+        if span is None or span.file != function.body_range.file or not call.callee_usr:
+            raise ValueError("Call edit lacks original source identity or range")
+        start, end = span.start - function.body_range.start, span.end - function.body_range.start
+        if not 0 <= start < end <= len(data) or data[start:end] != call.callee_name.encode("utf-8"):
+            raise ValueError("Call edit does not match the original identifier")
+        ranges.append((start, end, target.encode("utf-8")))
+    for call, suffix in argument_suffixes:
+        span = call.call_range
+        if span is None or span.file != function.body_range.file or not call.callee_usr:
+            raise ValueError("Call insertion lacks original source identity or range")
+        start, end = span.start - function.body_range.start, span.end - function.body_range.start
+        if not 0 <= start < end <= len(data) or data[end - 1 : end] != b")":
+            raise ValueError("Call insertion does not match the original closing parenthesis")
+        ranges.append((end - 1, end - 1, suffix.encode("utf-8")))
     pieces = []
-    cursor = 0
-    replacement_index = 0
-    length = len(source)
-    while cursor < length:
-        position = source.find(name, cursor)
-        if position < 0:
-            pieces.append(source[cursor:])
-            break
-        before = source[position - 1] if position else " "
-        after_position = position + len(name)
-        after = source[after_position] if after_position < length else " "
-        if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
-            cursor = after_position
-            continue
-        opening = after_position
-        while opening < length and source[opening].isspace():
-            opening += 1
-        if opening >= length or source[opening] != "(":
-            cursor = after_position
-            continue
-        pieces.append(source[cursor:position])
-        target = replacements[min(replacement_index, len(replacements) - 1)]
-        replacement_index += 1
-        pieces.append(target)
-        cursor = after_position
-    return "".join(pieces)
-
-
-def _rewrite_warp_intrinsic_calls(body, name, target):
-    pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
-    replacements = []
-    for match in pattern.finditer(body):
-        opening = match.end() - 1
-        closing = find_matching_delimiter(body, opening, "(", ")")
-        if closing is None:
-            continue
-        arguments = [
-            item.strip() for item in split_top_level(body[opening + 1 : closing]) if item.strip()
-        ]
-        replacement = None
-        if name == "__activemask" and not arguments:
-            replacement = target
-        elif name == "__syncwarp" and len(arguments) <= 1:
-            replacement = target
-        elif name in {"__shfl_sync", "__shfl_down_sync"} and len(arguments) in {3, 4}:
-            width = arguments[3] if len(arguments) == 4 else "32"
-            replacement = (
-                f"{target}({arguments[0]}, {arguments[1]}, {arguments[2]}, "
-                f"{width}, thread_index_in_simdgroup)"
-            )
-        elif name in {"__any_sync", "__all_sync"} and len(arguments) == 2:
-            replacement = f"{target}({arguments[0]}, {arguments[1]})"
-        if replacement:
-            replacements.append((match.start(), closing + 1, replacement))
-    for start, end, replacement in reversed(replacements):
-        body = body[:start] + replacement + body[end:]
-    return body
-
-
-def _rewrite_atomic_calls(body, name, target):
-    pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
-    replacements = []
-    for match in pattern.finditer(body):
-        opening = match.end() - 1
-        closing = find_matching_delimiter(body, opening, "(", ")")
-        if closing is None:
-            continue
-        arguments = [item.strip() for item in split_top_level(body[opening + 1 : closing])]
-        if name == "atomicCAS" and len(arguments) == 3:
-            replacement = f"mcu_atomic_cas({arguments[0]}, {arguments[1]}, {arguments[2]})"
-        elif len(arguments) == 2:
-            replacement = f"{target}({arguments[0]}, {arguments[1]}, memory_order_relaxed)"
-        else:
-            continue
-        replacements.append((match.start(), closing + 1, replacement))
-    for start, end, replacement in reversed(replacements):
-        body = body[:start] + replacement + body[end:]
-    return body
+    copied = 0
+    for start, end, replacement in sorted(ranges):
+        if start < copied:
+            raise ValueError("Overlapping call edits")
+        pieces.extend((data[copied:start], replacement))
+        copied = end
+    pieces.append(data[copied:])
+    return b"".join(pieces).decode("utf-8")
 
 
 def _rewrite_atomic_loads(body, atomic_parameters):
@@ -216,6 +180,22 @@ def rewrite_address_space_syntax(body, function, spaces):
         if not item.type.pointer_depth:
             storage.setdefault(item.name, item.storage)
 
+    semantic_assignments = [
+        assignment
+        for statement in function.statements
+        for assignment in (statement.attributes or {}).get("pointer_assignments", [])
+    ]
+    for name, source in function.effects.get("pointer_aliases", {}).items():
+        if source in storage:
+            storage[name] = storage[source]
+    for assignment in semantic_assignments:
+        inferred = next(
+            (storage[source] for source in assignment.get("sources", []) if source in storage),
+            None,
+        )
+        if inferred:
+            storage[assignment["target"]] = inferred
+
     pointer_declarations = list(_pointer_declarations(body))
     unresolved = {item["name"] for item in pointer_declarations}
     for _pass in range(len(pointer_declarations) + 1):
@@ -225,9 +205,11 @@ def rewrite_address_space_syntax(body, function, spaces):
             if name not in unresolved:
                 continue
             expressions = [declaration["initializer"]]
-            expressions.extend(
-                match.group(1) for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
-            )
+            if name not in storage:
+                expressions.extend(
+                    match.group(1)
+                    for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
+                )
             inferred = next(
                 (
                     space
@@ -278,7 +260,23 @@ def rewrite_address_space_syntax(body, function, spaces):
     return cast_pattern.sub(replace_cast, rewritten)
 
 
-def mark_readonly_literal_arrays(body):
+def mark_readonly_literal_arrays(body, function=None):
+    semantic_names = None
+    if function is not None:
+        written = {
+            access.get("array")
+            for statement in function.statements
+            for access in (statement.attributes or {}).get("array_accesses", [])
+            if access.get("mode") == "write"
+        }
+        semantic_names = {
+            item.name
+            for item in function.local_objects
+            if item.type.kind == "array"
+            and item.initializer
+            and "{" in item.initializer
+            and item.name not in written
+        }
     array_pattern = re.compile(
         r"(?P<prefix>^[ \t]*)(?P<type>(?:(?:unsigned|signed)\s+)?(?:WORD|BYTE|uint|int|ulong|long|uchar|char))\s+"
         r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>\d+)\s*\]\s*=\s*\{"
@@ -289,6 +287,8 @@ def mark_readonly_literal_arrays(body):
     replacements = []
     for match in array_pattern.finditer(body):
         name = match.group("name")
+        if semantic_names is not None and name not in semantic_names:
+            continue
         remaining = body[: match.start()] + body[match.end() :]
         if re.search(rf"\b{re.escape(name)}\s*\[[^]]+\]\s*=", remaining):
             continue
@@ -388,7 +388,9 @@ def readonly_pointer_parameters(parameters, body, atomic_parameters=None, effect
             and parameter.name not in written
             and parameter.name not in passed_to_unknown
             and parameter.name not in aliased
-            and not _has_mutable_local_pointer_alias(body, parameter.name)
+            and not (
+                _has_mutable_local_pointer_alias(body, parameter.name) if not effects else False
+            )
             and not (unknown and parameter.name in passed_to_unknown)
         }
     readonly = set()
@@ -505,6 +507,10 @@ def _render_intrinsic_prelude(plan):
     ):
         lines.extend(
             [
+                "inline uint mcu_warp_active_mask() { return 0xffffffffu; }",
+                "inline void mcu_warp_sync(uint mask = 0xffffffffu) {",
+                "    simdgroup_barrier(mem_flags::mem_none);",
+                "}",
                 "template <typename T>",
                 "inline T mcu_warp_shfl_sync(uint mask, T value, uint source_lane, uint width, uint lane) {",
                 "    return (mask == 0xffffffffu && width == 32u) ? simd_shuffle(value, source_lane) : value;",

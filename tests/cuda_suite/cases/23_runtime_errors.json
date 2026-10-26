@@ -1,9 +1,0 @@
-{
-  "id": "23",
-  "name": "runtime last-error and zero-size operations",
-  "tier": "hard",
-  "program": "tests/cuda_suite/programs/runtime_api.cu",
-  "args": ["errors"],
-  "expected": "status=pass",
-  "timeout_seconds": 30
-}

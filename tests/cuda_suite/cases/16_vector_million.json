@@ -1,1 +1,0 @@
-{"id":"16","name":"million element vector","tier":"stress","program":"tests/cuda_suite/programs/vector_pipeline.cu","args":["1000000","2","3","7"],"timeout_seconds":60}

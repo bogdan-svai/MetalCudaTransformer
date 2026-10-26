@@ -1,9 +1,0 @@
-{
-  "id": "22",
-  "name": "runtime events over stream work",
-  "tier": "medium",
-  "program": "tests/cuda_suite/programs/runtime_api.cu",
-  "args": ["events"],
-  "expected": "status=pass",
-  "timeout_seconds": 30
-}

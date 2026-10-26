@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-import re
 
 from core.ir.symbols import FunctionVariantIR
 
@@ -13,13 +12,16 @@ class DeviceLinkPlan:
     diagnostics: list[dict] = field(default_factory=list)
     atomic_parameters: dict[str, dict[str, dict]] = field(default_factory=dict)
     atomic_locals: dict[str, dict[str, dict]] = field(default_factory=dict)
+    intrinsic_calls: dict[tuple, dict] = field(default_factory=dict)
 
     @property
     def ok(self):
         return not any(item["severity"] == "error" for item in self.diagnostics)
 
     def to_manifest(self, project):
-        reachable_ids = set(self.kernel_ids) | {variant.symbol_id for variant in self.ordered_variants}
+        reachable_ids = set(self.kernel_ids) | {
+            variant.symbol_id for variant in self.ordered_variants
+        }
         variants_by_symbol = {}
         for variant in self.ordered_variants:
             variants_by_symbol.setdefault(variant.symbol_id, []).append(variant.to_dict())
@@ -33,7 +35,7 @@ class DeviceLinkPlan:
         if project.macros:
             capabilities.add("device_macros")
         if any(
-            re.search(r"\b[A-Za-z_]\w*\s+[A-Za-z_]\w*\s*\[[^]]+\]", project.functions[item].body)
+            any(local.array_extent is not None for local in project.functions[item].local_objects)
             for item in reachable_ids
         ):
             capabilities.add("fixed_local_arrays")

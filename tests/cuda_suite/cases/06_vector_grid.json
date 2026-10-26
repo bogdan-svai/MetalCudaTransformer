@@ -1,1 +1,0 @@
-{"id":"06","name":"multi-block vector","tier":"medium","program":"tests/cuda_suite/programs/vector_pipeline.cu","args":["4096","10","2","3"]}

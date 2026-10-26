@@ -3,8 +3,8 @@ from copy import deepcopy
 from core.version import MCU_VERSION
 
 
-CONTRACT_SCHEMA_VERSION = 1
-JSON_CONTRACT = "mcu.tooling.v1"
+CONTRACT_SCHEMA_VERSION = 2
+JSON_CONTRACT = "mcu.tooling.v2"
 
 
 def with_contract(payload, exit_code=None):

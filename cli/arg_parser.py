@@ -10,7 +10,7 @@ def build_parser():
 
     check = subcommands.add_parser(
         "check",
-        help="Analyze CUDA/C++ source structure and run Stage 1 sanity checks",
+        help="Analyze CUDA/C++ source structure and validate kernel launches",
     )
     check.add_argument("path", help="Source file or directory to analyze")
     check.add_argument(
@@ -26,7 +26,7 @@ def build_parser():
 
     build = subcommands.add_parser(
         "build",
-        help="Run Stage 1 validation and generate Metal source plus routing metadata",
+        help="Validate CUDA/C++ sources and generate Metal source plus routing metadata",
     )
     build.add_argument("path", help="Source file or directory to build")
     build.add_argument(
@@ -57,9 +57,14 @@ def build_parser():
         help="Native build directory (used with --native)",
     )
 
+    build.add_argument(
+        "--auto-parallel", choices=["off", "report", "safe"], default="off",
+        help="Experimental proven host-loop offload; safe requires --native",
+    )
+
     analyze = subcommands.add_parser(
         "analyze",
-        help="Run the stable Stage 13 tooling analysis contract for a source tree",
+        help="Analyze a source tree and report compatibility diagnostics",
     )
     analyze.add_argument("path", help="Source file or directory to analyze")
     analyze.add_argument(
@@ -71,6 +76,11 @@ def build_parser():
         "--verbose",
         action="store_true",
         help="Include parser diagnostics in metadata",
+    )
+
+    analyze.add_argument(
+        "--auto-parallel", choices=["off", "report"], default="off",
+        help="Report original host loops without changing execution",
     )
 
     capabilities = subcommands.add_parser(

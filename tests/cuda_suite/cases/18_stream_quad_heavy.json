@@ -1,1 +1,0 @@
-{"id":"18","name":"heavy four stream fanout","tier":"stress","program":"tests/cuda_suite/programs/stream_fanout.cu","args":["4","250","65536"],"timeout_seconds":60}

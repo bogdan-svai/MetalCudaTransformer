@@ -19,7 +19,7 @@ def emit(payload, as_json, exit_code=None):
         return
 
     metadata = payload.get("metadata", {})
-    print(f"MCU {_stage_name(payload)}: {metadata.get('entry', '-')}")
+    print(f"MCU {_command_label(payload)}: {metadata.get('entry', '-')}")
     print(f"Parser: {metadata.get('parser', '-')}")
     print(f"Sources: {len(metadata.get('sources', []))}")
     print(f"Kernels: {len(metadata.get('kernels', []))}")
@@ -40,6 +40,12 @@ def emit(payload, as_json, exit_code=None):
     for item in diagnostics:
         label = ERROR if item["severity"] == "error" else WARNING
         print(f"{label} {format_location(item)}{item['message']}")
+
+    if payload.get("auto_parallel"):
+        for loop in payload["auto_parallel"]["loops"]:
+            execution = "GPU with CPU fallback" if loop["execution"] != "cpu" else "CPU"
+            print(f"Host loop: {loop['node']['file']}:{loop['line']}:{loop['column']} "
+                  f"{loop['function']} — {loop['status']}, {execution}; " + ", ".join(loop["reasons"]))
 
     if payload.get("object"):
         print(f"MCU object: {payload['object']['path']}")
@@ -90,25 +96,23 @@ def format_location(item):
     return f"{file}: "
 
 
-def _stage_name(payload):
+def _command_label(payload):
     if payload.get("command") == "analyze":
-        return "Stage 13 analyze"
+        return "analyze"
     if payload.get("command") in {"compile", "run", "make", "nvcc-driver"}:
-        return f"Stage 7 {payload['command']}"
+        return f"{payload['command']}"
     if payload.get("command") != "build":
-        return "Stage 1 check"
+        return "check"
     native = payload.get("build", {}).get("native")
     if native:
-        if payload.get("build", {}).get("device_function_count", 0):
-            return "Stage 6 native build"
-        return "Stage 5 native build"
+        return "native build"
     plans = payload.get("build", {}).get("coarsening", {}).get("plans", {})
     optimized = any(plan["coarsening_factor"] > 1 for plan in plans.values())
-    return "Stage 3 optimized build" if optimized else "Stage 2 build"
+    return "optimized build" if optimized else "build"
 
 
 def _emit_capabilities(payload):
-    print(f"MCU Stage 13 capabilities: {payload['mcu_version']}")
+    print(f"MCU capabilities: {payload['mcu_version']}")
     print(f"Contract: {payload['contract']} schema={payload['schema_version']}")
     print(f"Runtime ABI: {payload['runtime_abi']}")
     print(f"Runtime APIs: {len(payload.get('runtime_apis', []))}")

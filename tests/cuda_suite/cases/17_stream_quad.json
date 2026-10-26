@@ -1,1 +1,0 @@
-{"id":"17","name":"four stream fanout","tier":"stress","program":"tests/cuda_suite/programs/stream_fanout.cu","args":["4","50","16384"],"timeout_seconds":60}

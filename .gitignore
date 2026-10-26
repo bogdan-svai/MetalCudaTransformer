@@ -1,4 +1,5 @@
 .DS_Store
+.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -10,4 +11,4 @@ mcu_artifacts.zip
 *.pcm
 *.o
 *.a
-examples/stage9_project/app/main
+examples/sha256_miner/app/main

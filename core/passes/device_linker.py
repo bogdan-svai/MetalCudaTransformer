@@ -4,6 +4,7 @@ from core.ir.link import DeviceLinkPlan
 from core.ir.symbols import FunctionVariantIR, generated_symbol_name
 from core.passes.atomics import analyze_atomic_parameters
 from core.passes.memory_model import validate_memory_model
+from core.passes.validation import UNSUPPORTED_WARP_INTRINSICS, _warp_diagnostics
 from core.registry.catalog import default_registry
 
 
@@ -12,6 +13,7 @@ def build_device_link_plan(project, registry=None):
     diagnostics = []
     resolved_calls = {}
     intrinsics = {}
+    intrinsic_calls = {}
 
     device_functions = {
         symbol_id: function
@@ -19,27 +21,25 @@ def build_device_link_plan(project, registry=None):
         if function.is_device_callable
     }
     kernels = sorted(
-        symbol_id for symbol_id, function in device_functions.items()
-        if function.kind == "KERNEL"
+        symbol_id for symbol_id, function in device_functions.items() if function.kind == "KERNEL"
     )
     diagnostics.extend(validate_memory_model(project))
 
     for symbol_id, function in device_functions.items():
-        if function.kind != "KERNEL" and re.search(
-            r"\b(?:threadIdx|blockIdx|blockDim|gridDim)\b",
-            function.body,
-        ):
-            diagnostics.append({
-                "code": "DeviceHelperUsesGeometry",
-                "severity": "error",
-                "message": (
-                    f"Device helper '{function.name}' uses implicit CUDA geometry; "
-                    "hidden geometry parameters are not supported in Stage 6."
-                ),
-                "file": function.source.file,
-                "line": function.source.line,
-                "column": function.source.column,
-            })
+        if function.kind != "KERNEL" and function.effects.get("uses_geometry"):
+            diagnostics.append(
+                {
+                    "code": "DeviceHelperUsesGeometry",
+                    "severity": "error",
+                    "message": (
+                        f"Device helper '{function.name}' uses implicit CUDA geometry; "
+                        "hidden geometry parameters are not supported by the device linker."
+                    ),
+                    "file": function.source.file,
+                    "line": function.source.line,
+                    "column": function.source.column,
+                }
+            )
 
     for symbol_id, function in device_functions.items():
         for call in function.calls:
@@ -47,15 +47,49 @@ def build_device_link_plan(project, registry=None):
             if resolution is None:
                 continue
             if isinstance(resolution, str):
+                if not call.callee_usr or call.identifier_range is None or call.rewrite_issue:
+                    _diagnose(
+                        diagnostics,
+                        "UnsafeDeviceCallRewrite",
+                        call.rewrite_issue
+                        or "Device call has no verified original identifier range.",
+                        call,
+                    )
+                    continue
                 resolved_calls[_call_key(call)] = resolution
             else:
+                if (
+                    not call.callee_usr
+                    or call.identifier_range is None
+                    or call.call_range is None
+                    or call.rewrite_issue
+                ):
+                    _diagnose(
+                        diagnostics,
+                        "UnsafeIntrinsicCallRewrite",
+                        call.rewrite_issue or "Intrinsic call has no verified original range.",
+                        call,
+                    )
+                    continue
                 intrinsics[call.callee_name] = resolution.to_dict()
+                intrinsic_calls[_call_key(call)] = resolution.to_dict()
 
     _detect_cycles(kernels, device_functions, resolved_calls, diagnostics)
-    atomic_parameters, atomic_locals, atomic_diagnostics = analyze_atomic_parameters(project, resolved_calls)
+    atomic_parameters, atomic_locals, atomic_diagnostics = analyze_atomic_parameters(
+        project, resolved_calls, intrinsic_calls
+    )
     diagnostics.extend(atomic_diagnostics)
     if _has_errors(diagnostics):
-        return DeviceLinkPlan(kernels, [], {}, intrinsics, diagnostics, atomic_parameters, atomic_locals)
+        return DeviceLinkPlan(
+            kernels,
+            [],
+            {},
+            intrinsics,
+            diagnostics,
+            atomic_parameters,
+            atomic_locals,
+            intrinsic_calls,
+        )
 
     ordered = []
     seen_variants = set()
@@ -78,50 +112,67 @@ def build_device_link_plan(project, registry=None):
             if callee_spaces is None:
                 continue
             atomic_callee_parameters = atomic_parameters.get(callee_id, {})
-            unsupported_atomic_space = next((
-                (callee.parameters[index].name, space)
-                for index, space in enumerate(callee_spaces)
-                if callee.parameters[index].name in atomic_callee_parameters
-                and space not in {"device", "threadgroup"}
-            ), None)
+            unsupported_atomic_space = next(
+                (
+                    (callee.parameters[index].name, space)
+                    for index, space in enumerate(callee_spaces)
+                    if callee.parameters[index].name in atomic_callee_parameters
+                    and space not in {"device", "threadgroup"}
+                ),
+                None,
+            )
             if unsupported_atomic_space:
                 name, space = unsupported_atomic_space
-                diagnostics.append({
-                    "code": "UnsupportedAtomicAddressSpace",
-                    "severity": "error",
-                    "message": f"Atomic parameter '{name}' resolves to unsupported '{space}' storage.",
-                    "file": call.source.file,
-                    "line": call.source.line,
-                    "column": call.source.column,
-                })
+                diagnostics.append(
+                    {
+                        "code": "UnsupportedAtomicAddressSpace",
+                        "severity": "error",
+                        "message": f"Atomic parameter '{name}' resolves to unsupported '{space}' storage.",
+                        "file": call.source.file,
+                        "line": call.source.line,
+                        "column": call.source.column,
+                    }
+                )
                 continue
             visit(callee_id, callee_spaces)
             target = generated_symbol_name(callee_id, callee_spaces)
-            call_targets[(
-                symbol_id,
-                spaces,
-                call.callee_name,
-                call.source.file,
-                call.source.line,
-                call.source.column,
-            )] = target
+            call_targets[
+                (
+                    symbol_id,
+                    spaces,
+                    call.callee_name,
+                    call.source.file,
+                    call.source.line,
+                    call.source.column,
+                )
+            ] = target
 
         if function.kind != "KERNEL":
-            ordered.append(FunctionVariantIR(
-                symbol_id=symbol_id,
-                generated_name=generated_symbol_name(symbol_id, spaces),
-                parameter_address_spaces=spaces,
-            ))
+            ordered.append(
+                FunctionVariantIR(
+                    symbol_id=symbol_id,
+                    generated_name=generated_symbol_name(symbol_id, spaces),
+                    parameter_address_spaces=spaces,
+                )
+            )
 
     for kernel_id in kernels:
         kernel = device_functions[kernel_id]
         root_spaces = tuple(
-            "device" if parameter.type.pointer_depth else None
-            for parameter in kernel.parameters
+            "device" if parameter.type.pointer_depth else None for parameter in kernel.parameters
         )
         visit(kernel_id, root_spaces)
 
-    return DeviceLinkPlan(kernels, ordered, call_targets, intrinsics, diagnostics, atomic_parameters, atomic_locals)
+    return DeviceLinkPlan(
+        kernels,
+        ordered,
+        call_targets,
+        intrinsics,
+        diagnostics,
+        atomic_parameters,
+        atomic_locals,
+        intrinsic_calls,
+    )
 
 
 def _resolve_call(call, project, registry, diagnostics):
@@ -138,10 +189,16 @@ def _resolve_call(call, project, registry, diagnostics):
             call,
         )
 
-    candidates = [
-        function for function in project.functions_named(call.callee_name)
-        if function.is_device_callable and len(function.parameters) == len(call.arguments)
-    ]
+    if call.callee_usr:
+        # An AST-resolved method or external declaration must not bind to an
+        # unrelated project function merely because the spelling matches.
+        candidates = []
+    else:
+        candidates = [
+            function
+            for function in project.functions_named(call.callee_name)
+            if function.is_device_callable and len(function.parameters) == len(call.arguments)
+        ]
     if len(candidates) == 1:
         return candidates[0].symbol_id
     if len(candidates) > 1:
@@ -152,7 +209,22 @@ def _resolve_call(call, project, registry, diagnostics):
             call,
         )
 
-    rule = registry.resolve(call.callee_name, len(call.arguments))
+    if call.callee_name in UNSUPPORTED_WARP_INTRINSICS and (
+        call.intrinsic_declaration or not call.callee_usr
+    ):
+        return _diagnose(
+            diagnostics,
+            "UnsupportedWarpIntrinsic",
+            f"CUDA warp intrinsic '{call.callee_name}' is not implemented in this build.",
+            call,
+        )
+
+    argument_count = (
+        call.explicit_argument_count
+        if call.explicit_argument_count is not None
+        else len(call.arguments)
+    )
+    rule = registry.resolve(call.callee_name, argument_count)
     if rule is False:
         return _diagnose(
             diagnostics,
@@ -161,6 +233,21 @@ def _resolve_call(call, project, registry, diagnostics):
             call,
         )
     if rule:
+        if not call.intrinsic_declaration:
+            return _diagnose(
+                diagnostics,
+                "UnverifiedIntrinsicDeclaration",
+                f"Call to '{call.callee_name}' does not resolve to a supported intrinsic declaration.",
+                call,
+            )
+        if rule.lowering_handler == "lower_warp_intrinsic":
+            errors = _warp_diagnostics(
+                {"file": call.source.file, "body_line": call.source.line},
+                [(call.callee_name, call.arguments[:argument_count])],
+            )
+            if errors:
+                diagnostics.extend(item.to_dict() for item in errors)
+                return None
         return rule
 
     if call.callee_name.startswith("operator"):
@@ -180,14 +267,16 @@ def _detect_cycles(roots, functions, resolved_calls, diagnostics):
     def walk(symbol_id):
         if symbol_id in visiting:
             function = functions[symbol_id]
-            diagnostics.append({
-                "code": "RecursiveDeviceCall",
-                "severity": "error",
-                "message": f"Recursive device call cycle includes '{function.name}'.",
-                "file": function.source.file,
-                "line": function.source.line,
-                "column": function.source.column,
-            })
+            diagnostics.append(
+                {
+                    "code": "RecursiveDeviceCall",
+                    "severity": "error",
+                    "message": f"Recursive device call cycle includes '{function.name}'.",
+                    "file": function.source.file,
+                    "line": function.source.line,
+                    "column": function.source.column,
+                }
+            )
             return
         if symbol_id in visited:
             return
@@ -205,20 +294,16 @@ def _detect_cycles(roots, functions, resolved_calls, diagnostics):
 
 def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
     caller_space_by_parameter = {
-        parameter.name: caller_spaces[index]
-        for index, parameter in enumerate(caller.parameters)
+        parameter.name: caller_spaces[index] for index, parameter in enumerate(caller.parameters)
     }
     local_objects = {item.name: item for item in caller.local_objects}
     pointer_flow_sources = {
         **caller_space_by_parameter,
-        **{
-            item.name: item.storage
-            for item in caller.local_objects
-            if item.type.kind == "array"
-        },
+        **{item.name: item.storage for item in caller.local_objects if item.type.kind == "array"},
     }
     scalar_local_spaces = {
-        item.name: item.storage for item in caller.local_objects
+        item.name: item.storage
+        for item in caller.local_objects
         if not item.type.pointer_depth and item.type.kind != "array"
     }
     inferred_local_spaces, conflicting_locals = _infer_local_pointer_spaces(
@@ -227,9 +312,7 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
         scalar_local_spaces,
     )
     local_spaces = {
-        item.name: item.storage
-        for item in caller.local_objects
-        if item.type.kind == "array"
+        item.name: item.storage for item in caller.local_objects if item.type.kind == "array"
     }
     local_spaces.update(inferred_local_spaces)
     spaces = []
@@ -239,10 +322,12 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
             continue
         expression = call.arguments[index] if index < len(call.arguments) else ""
         argument_symbol = (
-            call.argument_symbols[index]
-            if index < len(call.argument_symbols) else None
+            call.argument_symbols[index] if index < len(call.argument_symbols) else None
         )
-        if argument_symbol in caller_space_by_parameter and caller_space_by_parameter[argument_symbol]:
+        if (
+            argument_symbol in caller_space_by_parameter
+            and caller_space_by_parameter[argument_symbol]
+        ):
             matched = [caller_space_by_parameter[argument_symbol]]
             local_matched = []
         elif argument_symbol in local_spaces:
@@ -250,27 +335,32 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
             local_matched = [local_spaces[argument_symbol]]
         else:
             matched = [
-                space for name, space in caller_space_by_parameter.items()
+                space
+                for name, space in caller_space_by_parameter.items()
                 if space and re.search(rf"\b{re.escape(name)}\b", expression)
             ]
             local_matched = [
-                space for name, space in local_spaces.items()
+                space
+                for name, space in local_spaces.items()
                 if re.search(rf"\b{re.escape(name)}\b", expression)
             ]
         local_matched.extend(
-            space for name, space in scalar_local_spaces.items()
+            space
+            for name, space in scalar_local_spaces.items()
             if re.search(rf"&\s*{re.escape(name)}\b", expression)
         )
         inferred_spaces = set(matched + local_matched)
         if len(inferred_spaces) > 1:
-            diagnostics.append({
-                "code": "IllegalAddressSpaceCast",
-                "severity": "error",
-                "message": f"Argument '{expression}' combines incompatible pointer address spaces.",
-                "file": call.source.file,
-                "line": call.source.line,
-                "column": call.source.column,
-            })
+            diagnostics.append(
+                {
+                    "code": "IllegalAddressSpaceCast",
+                    "severity": "error",
+                    "message": f"Argument '{expression}' combines incompatible pointer address spaces.",
+                    "file": call.source.file,
+                    "line": call.source.line,
+                    "column": call.source.column,
+                }
+            )
             return None
         if inferred_spaces:
             spaces.append(next(iter(inferred_spaces)))
@@ -279,36 +369,42 @@ def _infer_callee_spaces(caller, caller_spaces, callee, call, diagnostics):
             spaces.append(local_spaces[argument_symbol])
             continue
         if argument_symbol in conflicting_locals:
-            diagnostics.append({
-                "code": "IllegalAddressSpaceCast",
-                "severity": "error",
-                "message": f"Local pointer '{argument_symbol}' may refer to incompatible address spaces.",
-                "file": call.source.file,
-                "line": call.source.line,
-                "column": call.source.column,
-            })
+            diagnostics.append(
+                {
+                    "code": "IllegalAddressSpaceCast",
+                    "severity": "error",
+                    "message": f"Local pointer '{argument_symbol}' may refer to incompatible address spaces.",
+                    "file": call.source.file,
+                    "line": call.source.line,
+                    "column": call.source.column,
+                }
+            )
             return None
         if argument_symbol in local_objects and local_objects[argument_symbol].type.pointer_depth:
-            diagnostics.append({
+            diagnostics.append(
+                {
+                    "code": "AmbiguousAddressSpace",
+                    "severity": "error",
+                    "message": f"Cannot prove pointee address space for local pointer '{argument_symbol}'.",
+                    "file": call.source.file,
+                    "line": call.source.line,
+                    "column": call.source.column,
+                }
+            )
+            return None
+        diagnostics.append(
+            {
                 "code": "AmbiguousAddressSpace",
                 "severity": "error",
-                "message": f"Cannot prove pointee address space for local pointer '{argument_symbol}'.",
+                "message": (
+                    f"Cannot infer address space for argument {index} of "
+                    f"'{callee.name}' from expression '{expression}'."
+                ),
                 "file": call.source.file,
                 "line": call.source.line,
                 "column": call.source.column,
-            })
-            return None
-        diagnostics.append({
-            "code": "AmbiguousAddressSpace",
-            "severity": "error",
-            "message": (
-                f"Cannot infer address space for argument {index} of "
-                f"'{callee.name}' from expression '{expression}'."
-            ),
-            "file": call.source.file,
-            "line": call.source.line,
-            "column": call.source.column,
-        })
+            }
+        )
         return None
     return tuple(spaces)
 
@@ -321,11 +417,13 @@ def _infer_local_pointer_spaces(body, parameter_spaces, scalar_local_spaces=None
         body,
     ):
         spaces[match.group(1)] = "threadgroup"
-    declarations = list(re.finditer(
-        r"(?m)^\s*(?:const\s+)?[A-Za-z_]\w*\s*\*\s*"
-        r"(?P<name>[A-Za-z_]\w*)\s*(?:=\s*(?P<value>[^;]+))?;",
-        body,
-    ))
+    declarations = list(
+        re.finditer(
+            r"(?m)^\s*(?:const\s+)?[A-Za-z_]\w*\s*\*\s*"
+            r"(?P<name>[A-Za-z_]\w*)\s*(?:=\s*(?P<value>[^;]+))?;",
+            body,
+        )
+    )
     conflicts = set()
     for _pass in range(len(declarations) + 1):
         changed = False
@@ -333,8 +431,7 @@ def _infer_local_pointer_spaces(body, parameter_spaces, scalar_local_spaces=None
             name = declaration.group("name")
             expressions = [declaration.group("value") or ""]
             expressions.extend(
-                match.group(1)
-                for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
+                match.group(1) for match in re.finditer(rf"\b{re.escape(name)}\s*=\s*([^;]+)", body)
             )
             candidates = {
                 space
@@ -343,7 +440,9 @@ def _infer_local_pointer_spaces(body, parameter_spaces, scalar_local_spaces=None
                 if expression and space and re.search(rf"\b{re.escape(source)}\b", expression)
             }
             candidates.update(
-                space for expression in expressions for local, space in scalar_local_spaces.items()
+                space
+                for expression in expressions
+                for local, space in scalar_local_spaces.items()
                 if expression and re.search(rf"&\s*{re.escape(local)}\b", expression)
             )
             if len(candidates) > 1:
@@ -356,8 +455,7 @@ def _infer_local_pointer_spaces(body, parameter_spaces, scalar_local_spaces=None
         if not changed:
             break
     return {
-        name: space for name, space in spaces.items()
-        if name not in parameter_spaces
+        name: space for name, space in spaces.items() if name not in parameter_spaces
     }, conflicts
 
 
@@ -366,14 +464,16 @@ def _call_key(call):
 
 
 def _diagnose(diagnostics, code, message, call):
-    diagnostics.append({
-        "code": code,
-        "severity": "error",
-        "message": message,
-        "file": call.source.file,
-        "line": call.source.line,
-        "column": call.source.column,
-    })
+    diagnostics.append(
+        {
+            "code": code,
+            "severity": "error",
+            "message": message,
+            "file": call.source.file,
+            "line": call.source.line,
+            "column": call.source.column,
+        }
+    )
     return None
 
 

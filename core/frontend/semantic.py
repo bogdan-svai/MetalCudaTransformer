@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -5,21 +7,25 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.backends.host import rewrite_triple_chevrons
+from core.cache import CacheStore, fingerprint
 from core.frontend.clang_probe import CUDA_STUBS, _configure
 from core.frontend.regex_parser import iter_function_calls, read_text, split_top_level
 from core.ir.symbols import (
     CallEdgeIR,
     FunctionSymbolIR,
     LocalObjectIR,
+    LaunchIR,
     MacroIR,
     ParameterIR,
     ProjectSymbolIR,
     SourceLocationIR,
+    SourceRangeIR,
     StatementIR,
     TypeDeclarationIR,
     TypeIR,
     canonical_symbol_id,
 )
+from core.version import MCU_VERSION, SEMANTIC_IR_SCHEMA
 
 
 @dataclass
@@ -27,6 +33,7 @@ class SemanticFrontendResult:
     project: ProjectSymbolIR | None
     complete: bool
     diagnostics: list[dict]
+    cached: bool = False
 
 
 def parse_semantic_project(metadata):
@@ -46,6 +53,28 @@ def parse_semantic_project(metadata):
         return _unavailable("Native libclang library was not found")
 
     source_paths = [Path(path) for path in metadata.get("sources", [])]
+    translation_units = [
+        path for path in source_paths if path.suffix in {".cu", ".cpp", ".cc", ".cxx"}
+    ]
+    if len(translation_units) > 1 and not metadata.get("_semantic_monolithic"):
+        unit_result = _parse_semantic_units(metadata, translation_units)
+        if unit_result is not None:
+            return unit_result
+    cache = CacheStore()
+    cache_key = fingerprint(
+        {
+            "schema": SEMANTIC_IR_SCHEMA,
+            "mcu_version": MCU_VERSION,
+            "compile_context": metadata.get("compile_context", {}),
+            "sources": [
+                (str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in source_paths
+            ],
+        }
+    )
+    cached = _restore_semantic_cache(cache, cache_key)
+    if cached is not None:
+        return cached
     semantic_source = _build_semantic_source(source_paths)
     diagnostics = []
     try:
@@ -94,7 +123,111 @@ def parse_semantic_project(metadata):
                 }
             )
     project.diagnostics = diagnostics
-    return SemanticFrontendResult(project, not missing, diagnostics)
+    result = SemanticFrontendResult(project, not missing, diagnostics)
+    _publish_semantic_cache(cache, cache_key, result)
+    return result
+
+
+def _parse_semantic_units(metadata, translation_units):
+    """Parse and cache translation units independently before relinking them."""
+    all_sources = [Path(path) for path in metadata.get("sources", [])]
+    headers = [path for path in all_sources if path.suffix in {".h", ".hpp"}]
+    projects = []
+    cached = True
+    for unit in translation_units:
+        unit_metadata = dict(metadata)
+        unit_metadata["_semantic_monolithic"] = True
+        unit_metadata["sources"] = [str(path) for path in [unit, *headers]]
+        unit_metadata["functions"] = [
+            item
+            for item in metadata.get("functions", [])
+            if Path(item.get("file", "")).resolve() == unit.resolve()
+        ]
+        result = parse_semantic_project(unit_metadata)
+        if not result.complete or result.project is None:
+            return None
+        projects.append(result.project)
+        cached = cached and result.cached
+
+    merged = ProjectSymbolIR(
+        frontend="libclang_semantic",
+        translation_units=[path.as_posix() for path in translation_units],
+        functions={},
+        diagnostics=[],
+    )
+    for project in projects:
+        merged.functions.update(project.functions)
+        merged.types.update(project.types)
+        merged.macros.update(project.macros)
+        merged.launches.extend(project.launches)
+        merged.translation_units.extend(
+            item for item in project.translation_units if item not in merged.translation_units
+        )
+        merged.diagnostics.extend(project.diagnostics)
+    merged, unresolved = relink_semantic_project(merged)
+    if unresolved:
+        return None
+    return SemanticFrontendResult(merged, True, merged.diagnostics, cached=cached)
+
+
+def relink_semantic_project(project):
+    """Resolve calls after combining semantic IR from multiple objects.
+
+    Object-level Clang parses can see declarations from headers while the
+    definition lives in another translation unit.  Their call edge therefore
+    has a stable USR but no local ``callee_id``.  Relinking by USR restores the
+    cross-unit edge without guessing by spelling; effects are then propagated
+    over the reunited graph.
+    """
+    usr_to_id = {
+        function.clang_usr: symbol_id
+        for symbol_id, function in project.functions.items()
+        if function.clang_usr
+    }
+    unresolved = []
+    for function in project.functions.values():
+        for index, call in enumerate(function.calls):
+            if call.callee_id and call.callee_id in project.functions:
+                continue
+            callee_id = usr_to_id.get(call.callee_usr)
+            if callee_id:
+                function.calls[index] = replace(call, callee_id=callee_id)
+            elif call.callee_id:
+                unresolved.append(call)
+    _propagate_effects(project.functions)
+    return project, unresolved
+
+
+def _restore_semantic_cache(cache, key):
+    with tempfile.TemporaryDirectory(prefix="mcu-semantic-restore-") as directory:
+        target = Path(directory) / "semantic.json"
+        if not cache.restore("semantic", key, "semantic.json", target):
+            return None
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            project = ProjectSymbolIR.from_dict(payload["project"])
+            return SemanticFrontendResult(
+                project, bool(payload["complete"]), payload["diagnostics"], cached=True
+            )
+        except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+            return None
+
+
+def _publish_semantic_cache(cache, key, result):
+    with tempfile.TemporaryDirectory(prefix="mcu-semantic-publish-") as directory:
+        source = Path(directory) / "semantic.json"
+        source.write_text(
+            json.dumps(
+                {
+                    "complete": result.complete,
+                    "diagnostics": result.diagnostics,
+                    "project": result.project.to_dict(),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        cache.publish("semantic", key, "semantic.json", source)
 
 
 def _build_semantic_source(source_paths):
@@ -242,7 +375,21 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
                 types.setdefault(declaration.name, declaration)
 
     known_ids = set(functions)
+    from core.frontend.source_calls import (
+        collect_original_macros,
+        collect_original_type_locations,
+    )
+
     macros = _collect_macros(source_paths)
+    original_macros = collect_original_macros(source_paths, _clang_args(source_paths, metadata))
+    macros.update(original_macros)
+    original_type_locations = collect_original_type_locations(
+        source_paths, _clang_args(source_paths, metadata)
+    )
+    for name, declaration in list(types.items()):
+        location = original_type_locations.get(name)
+        if location:
+            types[name] = replace(declaration, source=location)
     for cursor, function in function_cursors:
         calls = []
         call_ordinals = {}
@@ -290,7 +437,65 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
             macros,
         )
 
+    _attach_original_calls(functions, source_paths, metadata)
     _propagate_effects(functions)
+
+    kernel_index = {}
+    for symbol_id, function in functions.items():
+        if function.kind == "KERNEL":
+            kernel_index.setdefault(function.name, []).append(symbol_id)
+    launch_irs = []
+    for item in metadata.get("launches", []):
+        candidates = kernel_index.get(item["kernel"], [])
+        referenced_usr = item.get("kernel_usr")
+        if referenced_usr:
+            usr_candidates = [
+                symbol_id
+                for symbol_id in candidates
+                if functions[symbol_id].clang_usr == referenced_usr
+            ]
+            if usr_candidates:
+                candidates = usr_candidates
+        kernel_id = candidates[0] if len(candidates) == 1 else None
+        if not candidates:
+            diagnostics.append(
+                {
+                    "code": "UnresolvedKernelLaunch",
+                    "severity": "error",
+                    "message": f"Launch target '{item['kernel']}' has no semantic kernel definition.",
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "column": None,
+                }
+            )
+        elif len(candidates) > 1:
+            diagnostics.append(
+                {
+                    "code": "AmbiguousKernelLaunch",
+                    "severity": "error",
+                    "message": f"Launch target '{item['kernel']}' matches multiple semantic kernels.",
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "column": None,
+                }
+            )
+        launch_irs.append(
+            LaunchIR(
+                kernel=item["kernel"],
+                kernel_id=kernel_id,
+                file=item["file"],
+                line=item["line"],
+                grid_expr=item["grid_expr"],
+                block_expr=item["block_expr"],
+                shared_expr=item.get("shared_expr", "0"),
+                stream_expr=item.get("stream_expr", "0"),
+                args=tuple(item.get("args", [])),
+                syntax=item.get("syntax", "cudaLaunch"),
+                source_range=(
+                    SourceRangeIR(**item["source_range"]) if item.get("source_range") else None
+                ),
+            )
+        )
 
     return ProjectSymbolIR(
         frontend="libclang_semantic",
@@ -302,8 +507,128 @@ def _collect_project(root, metadata, source_paths, cursor_kind, diagnostics):
         functions=functions,
         types=types,
         macros=macros,
+        launches=launch_irs,
         diagnostics=diagnostics,
     )
+
+
+def _attach_original_calls(functions, source_paths, metadata):
+    from clang.cindex import CursorKind
+
+    from core.frontend.source_calls import (
+        collect_original_functions,
+        direct_call_range,
+        original_call_extent,
+        is_intrinsic_declaration,
+    )
+
+    originals = collect_original_functions(
+        source_paths, _clang_args(source_paths, metadata), _parameter_type_ir
+    )
+    matched = {}
+    usr_to_id = {}
+    for symbol_id, function in functions.items():
+        record = originals.get((str(Path(function.source.file).resolve()), symbol_id))
+        if record is None:
+            continue
+        function.clang_usr = record.cursor.get_usr()
+        function.body_range = record.body_range
+        function.body = record.body
+        function.body_line = record.body_cursor.extent.start.line
+        function.source = replace(
+            function.source,
+            file=record.body_range.file,
+            line=record.cursor.location.line or function.source.line,
+            column=record.cursor.location.column or function.source.column,
+        )
+        function.translation_unit = record.body_range.file
+        # Rebuild statement/control-flow metadata from the original unit. The
+        # synthetic translation unit remains available for legacy analyses, but
+        # validation must reason about the source the backend will rewrite.
+        function.statements = _collect_statements(record.body_cursor, CursorKind, function)
+        matched[symbol_id] = record
+        usr_to_id[function.clang_usr] = symbol_id
+
+    for symbol_id, record in matched.items():
+        function = functions[symbol_id]
+        if not function.is_device_callable:
+            continue
+        calls = []
+        data = function.body.encode("utf-8")
+        for cursor in record.body_cursor.walk_preorder():
+            if cursor.kind != CursorKind.CALL_EXPR:
+                continue
+            referenced = cursor.referenced
+            name = referenced.spelling if referenced else cursor.spelling
+            if not name:
+                continue
+            usr = referenced.get_usr() if referenced else None
+            identifier_range, issue = direct_call_range(cursor, record.body_range, data)
+            arguments = list(cursor.get_arguments())
+            location = cursor.location
+            calls.append(
+                CallEdgeIR(
+                    caller_id=symbol_id,
+                    callee_name=name,
+                    callee_id=usr_to_id.get(usr),
+                    arguments=tuple(_tokens(a) for a in arguments),
+                    source=SourceLocationIR(function.source.file, location.line, location.column),
+                    argument_types=tuple(_type_ir(a.type) for a in arguments),
+                    argument_symbols=tuple(_argument_symbol(a, CursorKind) for a in arguments),
+                    callee_usr=usr,
+                    identifier_range=identifier_range,
+                    rewrite_issue=issue,
+                    call_range=original_call_extent(cursor, record.body_range, data),
+                    intrinsic_declaration=is_intrinsic_declaration(
+                        referenced, record.compatibility_header
+                    ),
+                    explicit_argument_count=sum(a.extent.start.file is not None for a in arguments),
+                )
+            )
+        # Preserve unresolved legacy diagnostics/intrinsics during migration.
+        # Resolved helper calls must only come from the original AST, never a
+        # recovered name/ordinal (which can refer to a comment or another scope).
+        names = {c.callee_name for c in calls}
+        for call in function.calls:
+            if call.callee_name not in names and record.has_body_errors:
+                if call.callee_id:
+                    calls.append(
+                        replace(
+                            call,
+                            rewrite_issue="Original Clang call identity could not be established.",
+                        )
+                    )
+                else:
+                    calls.append(call)
+        function.calls = calls
+
+    # Preserve the original reference behind cudaLaunch when Clang exposes it.
+    # The textual extractor still supplies launch expressions and arguments.
+    for item in metadata.get("launches", []):
+        for record in originals.values():
+            if record is None:
+                continue
+            for cursor in record.body_cursor.walk_preorder():
+                if cursor.kind != CursorKind.CALL_EXPR or cursor.spelling != "cudaLaunch":
+                    continue
+                if cursor.location.line != item.get("line"):
+                    continue
+                location_file = str(Path(str(cursor.location.file)).resolve())
+                if location_file != str(Path(item.get("file", "")).resolve()):
+                    continue
+                launch_range = original_call_extent(
+                    cursor,
+                    record.body_range,
+                    Path(record.body_range.file).read_bytes()[
+                        record.body_range.start : record.body_range.end
+                    ],
+                )
+                if launch_range:
+                    item["source_range"] = launch_range.to_dict()
+                arguments = list(cursor.get_arguments())
+                if arguments and arguments[0].referenced is not None:
+                    item["kernel_usr"] = arguments[0].referenced.get_usr()
+                    break
 
 
 def _propagate_effects(functions):
@@ -402,6 +727,9 @@ def _collect_effects(cursor, cursor_kind):
         "writes_memory": writes_memory,
         "uses_atomic": bool(atomics),
         "uses_barrier": bool(barriers),
+        "uses_geometry": bool(
+            re.search(r"\b(?:threadIdx|blockIdx|blockDim|gridDim)\b", _tokens(cursor))
+        ),
         "has_return": has_return,
         "calls": calls,
         "unknown_calls": unknown_calls,
@@ -616,9 +944,17 @@ def _collect_local_objects(function_cursor, cursor_kind, function):
                     cursor.location.line or function.source.line,
                     cursor.location.column or None,
                 ),
+                initializer=_local_initializer(cursor),
             )
         )
     return objects
+
+
+def _local_initializer(cursor):
+    tokens = _tokens(cursor)
+    if "=" not in tokens:
+        return ""
+    return tokens.split("=", 1)[1].strip()
 
 
 def _collect_statements(function_cursor, cursor_kind, function):
@@ -636,13 +972,26 @@ def _collect_statements(function_cursor, cursor_kind, function):
         cursor_kind.DEFAULT_STMT,
         cursor_kind.BREAK_STMT,
         cursor_kind.CONTINUE_STMT,
+        cursor_kind.CALL_EXPR,
     }
     statements = []
-    for cursor in _walk(function_cursor):
-        if cursor.kind not in statement_kinds:
-            continue
-        statements.append(
-            StatementIR(
+
+    def visit(cursor, parent_index=None):
+        statement_index = parent_index
+        child_indices = []
+        if cursor.kind in statement_kinds:
+            statement_index = len(statements)
+            statements.append(None)
+            attributes = {
+                "array_accesses": _statement_array_accesses(cursor, cursor_kind),
+                "pointer_assignments": _statement_pointer_assignments(cursor, cursor_kind),
+                "pointer_casts": _statement_pointer_casts(cursor, cursor_kind),
+                "non_atomic_targets": _statement_non_atomic_targets(cursor, cursor_kind),
+                **_statement_control_attributes(cursor, cursor_kind, function, function_cursor),
+                "parent_index": parent_index,
+                "child_indices": child_indices,
+            }
+            statements[statement_index] = StatementIR(
                 kind=getattr(cursor.kind, "name", str(cursor.kind)),
                 source=SourceLocationIR(
                     function.source.file,
@@ -655,12 +1004,127 @@ def _collect_statements(function_cursor, cursor_kind, function):
                     for child in cursor.get_children()
                     if child.kind in statement_kinds
                 ),
-                attributes={
-                    "array_accesses": _statement_array_accesses(cursor, cursor_kind),
-                },
+                attributes=attributes,
             )
-        )
+        for child in cursor.get_children():
+            before = len(statements)
+            visit(child, statement_index)
+            if statement_index is not None and len(statements) > before:
+                child_indices.extend(
+                    index
+                    for index in range(before, len(statements))
+                    if statements[index] is not None
+                    and statements[index].attributes.get("parent_index") == statement_index
+                )
+
+    visit(function_cursor)
+    _attach_cfg_links(statements)
     return statements
+
+
+def _attach_cfg_links(statements):
+    """Attach conservative lexical CFG edges to the statement tree."""
+    for index, statement in enumerate(statements):
+        attributes = statement.attributes
+        children = list(attributes.get("child_indices", []))
+        descendants = [
+            child
+            for child in range(index + 1, len(statements))
+            if _is_descendant(statements, child, index)
+        ]
+        after = (max(descendants) + 1) if descendants else index + 1
+        successors = []
+        if statement.kind in {"IF_STMT", "SWITCH_STMT"}:
+            successors.extend(children)
+            if after < len(statements):
+                successors.append(after)
+        elif statement.kind in {"FOR_STMT", "WHILE_STMT", "DO_STMT"}:
+            if children:
+                successors.append(children[0])
+            if after < len(statements):
+                successors.append(after)
+            if descendants:
+                attributes["cfg_back_edges"] = [descendants[-1], index]
+        elif index + 1 < len(statements):
+            successors.append(index + 1)
+        attributes["cfg_successors"] = list(dict.fromkeys(successors))
+
+
+def _is_descendant(statements, candidate, ancestor):
+    parent = statements[candidate].attributes.get("parent_index")
+    while parent is not None:
+        if parent == ancestor:
+            return True
+        parent = statements[parent].attributes.get("parent_index")
+    return False
+
+
+def _statement_control_attributes(cursor, cursor_kind, function, function_cursor):
+    """Collect conservative control-flow facts used by legality validation."""
+    calls = []
+    has_early_exit = False
+    if cursor.kind == cursor_kind.CALL_EXPR:
+        name = cursor.spelling or (cursor.referenced.spelling if cursor.referenced else "")
+        if name:
+            calls.append(name)
+    for child in _walk(cursor):
+        if child.kind == cursor_kind.CALL_EXPR:
+            name = child.spelling or (child.referenced.spelling if child.referenced else "")
+            if name:
+                calls.append(name)
+        elif child.kind in {
+            cursor_kind.RETURN_STMT,
+            cursor_kind.BREAK_STMT,
+            cursor_kind.CONTINUE_STMT,
+        }:
+            has_early_exit = True
+
+    condition = ""
+    loop_init = loop_update = ""
+    if cursor.kind in {
+        cursor_kind.IF_STMT,
+        cursor_kind.WHILE_STMT,
+        cursor_kind.DO_STMT,
+        cursor_kind.FOR_STMT,
+        cursor_kind.SWITCH_STMT,
+    }:
+        children = list(cursor.get_children())
+        if children:
+            if cursor.kind == cursor_kind.FOR_STMT:
+                # libclang exposes the three header clauses as the first
+                # children (declaration, condition, increment), even though
+                # punctuation is absent from the cursor token stream.
+                if len(children) >= 3:
+                    loop_init = _tokens(children[0])
+                    condition = _tokens(children[1])
+                    loop_update = _tokens(children[2])
+            else:
+                condition = _tokens(children[0])
+    pointer_parameters = {item.name for item in function.parameters if item.type.pointer_depth > 0}
+    thread_variables = set()
+    for declaration in _walk(function_cursor):
+        if declaration.kind != cursor_kind.VAR_DECL or not declaration.spelling:
+            continue
+        expression = _tokens(declaration)
+        if re.search(r"\b(?:threadIdx|blockIdx)\b", expression):
+            thread_variables.add(declaration.spelling)
+    thread_dependent = bool(
+        re.search(r"\b(?:threadIdx|blockIdx)\b", condition)
+        or any(re.search(rf"\b{re.escape(name)}\b", condition) for name in thread_variables)
+        or any(
+            re.search(rf"(?:\*\s*{re.escape(name)}\b|\b{re.escape(name)}\s*\[)", condition)
+            for name in pointer_parameters
+        )
+    )
+    return {
+        "condition": condition,
+        "loop_init": loop_init,
+        "loop_condition": condition if cursor.kind == cursor_kind.FOR_STMT else "",
+        "loop_update": loop_update,
+        "thread_dependent": thread_dependent,
+        "contains_barrier": any(name.startswith("__syncthreads") for name in calls),
+        "has_early_exit": has_early_exit,
+    }
 
 
 def _statement_array_accesses(cursor, cursor_kind):
@@ -694,6 +1158,84 @@ def _statement_array_accesses(cursor, cursor_kind):
                 {"array": base, "index": index, "mode": "write" if base in writes else "read"}
             )
     return accesses
+
+
+def _statement_pointer_assignments(cursor, cursor_kind):
+    assignments = []
+    for operation in _walk(cursor):
+        if operation.kind not in {
+            cursor_kind.BINARY_OPERATOR,
+            cursor_kind.COMPOUND_ASSIGNMENT_OPERATOR,
+        }:
+            continue
+        tokens = [token.spelling for token in operation.get_tokens()]
+        if "=" not in tokens:
+            continue
+        operands = list(operation.get_children())
+        if len(operands) < 2:
+            continue
+        lhs = operands[0]
+        target = lhs.spelling if lhs.kind == cursor_kind.DECL_REF_EXPR else ""
+        if not target:
+            continue
+        sources = tuple(
+            reference.referenced.spelling
+            for reference in _walk(operands[1])
+            if reference.kind == cursor_kind.DECL_REF_EXPR
+            and reference.referenced is not None
+            and reference.referenced.spelling
+        )
+        assignments.append({"target": target, "sources": list(dict.fromkeys(sources))})
+    return assignments
+
+
+def _statement_pointer_casts(cursor, cursor_kind):
+    casts = []
+    cast_kinds = {
+        getattr(cursor_kind, "CSTYLE_CAST_EXPR", None),
+        getattr(cursor_kind, "CXX_STATIC_CAST_EXPR", None),
+        getattr(cursor_kind, "CXX_REINTERPRET_CAST_EXPR", None),
+        getattr(cursor_kind, "CXX_CONST_CAST_EXPR", None),
+    }
+    for operation in _walk(cursor):
+        if operation.kind not in cast_kinds or "*" not in operation.type.get_canonical().spelling:
+            continue
+        sources = tuple(
+            reference.referenced.spelling
+            for reference in _walk(operation)
+            if reference.kind == cursor_kind.DECL_REF_EXPR
+            and reference.referenced is not None
+            and reference.referenced.spelling
+        )
+        casts.append(
+            {
+                "target_type": operation.type.get_canonical().spelling,
+                "sources": list(dict.fromkeys(sources)),
+            }
+        )
+    return casts
+
+
+def _statement_non_atomic_targets(cursor, cursor_kind):
+    targets = []
+    for operation in _walk(cursor):
+        if operation.kind not in {
+            cursor_kind.UNARY_OPERATOR,
+            cursor_kind.COMPOUND_ASSIGNMENT_OPERATOR,
+        }:
+            continue
+        tokens = [token.spelling for token in operation.get_tokens()]
+        if operation.kind == cursor_kind.COMPOUND_ASSIGNMENT_OPERATOR or any(
+            token in {"++", "--"} for token in tokens
+        ):
+            for reference in _walk(operation):
+                if (
+                    reference.kind == cursor_kind.DECL_REF_EXPR
+                    and reference.referenced is not None
+                    and reference.referenced.spelling
+                ):
+                    targets.append(reference.referenced.spelling)
+    return list(dict.fromkeys(targets))
 
 
 def _argument_symbol(cursor, cursor_kind):

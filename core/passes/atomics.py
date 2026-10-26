@@ -4,7 +4,7 @@ import re
 ATOMIC_OPERATIONS = {"atomicAdd", "atomicCAS", "atomicMin", "atomicMax", "atomicExch"}
 
 
-def analyze_atomic_parameters(project, resolved_calls):
+def analyze_atomic_parameters(project, resolved_calls, intrinsic_calls):
     uses = {}
     local_uses = {}
     diagnostics = []
@@ -18,7 +18,7 @@ def analyze_atomic_parameters(project, resolved_calls):
         parameters = {parameter.name: parameter for parameter in function.parameters}
         locals_by_name = {item.name: item for item in function.local_objects}
         for call in function.calls:
-            if call.callee_name not in ATOMIC_OPERATIONS:
+            if call.callee_name not in ATOMIC_OPERATIONS or _call_key(call) not in intrinsic_calls:
                 continue
             pointer = (
                 call.argument_symbols[0]
@@ -34,32 +34,41 @@ def analyze_atomic_parameters(project, resolved_calls):
                 canonical = local.type.canonical
                 destination = local_uses.setdefault(symbol_id, {})
             else:
-                diagnostics.append(_diagnostic(
-                    "UnsupportedAtomicAddressSpace",
-                    f"Atomic target '{call.arguments[0] if call.arguments else ''}' must refer to device or shared memory.",
-                    call,
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "UnsupportedAtomicAddressSpace",
+                        f"Atomic target '{call.arguments[0] if call.arguments else ''}' must refer to device or shared memory.",
+                        call,
+                    )
+                )
                 continue
             atomic_type = _atomic_type(canonical)
             if not atomic_type:
-                diagnostics.append(_diagnostic(
-                    "UnsupportedAtomicType",
-                    f"Atomic operation '{call.callee_name}' requires a signed or unsigned 32-bit integer pointer.",
-                    call,
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "UnsupportedAtomicType",
+                        f"Atomic operation '{call.callee_name}' requires a signed or unsigned 32-bit integer pointer.",
+                        call,
+                    )
+                )
                 continue
             if any(not _supported_value_type(item) for item in call.argument_types[1:]):
-                diagnostics.append(_diagnostic(
-                    "UnsupportedAtomicType",
-                    f"Atomic operation '{call.callee_name}' requires 32-bit integral values.",
-                    call,
-                ))
+                diagnostics.append(
+                    _diagnostic(
+                        "UnsupportedAtomicType",
+                        f"Atomic operation '{call.callee_name}' requires 32-bit integral values.",
+                        call,
+                    )
+                )
                 continue
-            destination.setdefault(pointer, {
-                "type": atomic_type,
-                "operations": [],
-                "memory_order": "memory_order_relaxed",
-            })["operations"].append(call.callee_name)
+            destination.setdefault(
+                pointer,
+                {
+                    "type": atomic_type,
+                    "operations": [],
+                    "memory_order": "memory_order_relaxed",
+                },
+            )["operations"].append(call.callee_name)
 
     changed = True
     while changed:
@@ -84,7 +93,10 @@ def analyze_atomic_parameters(project, resolved_calls):
                     inherited = dict(callee_uses[callee_parameter.name])
                     if caller_name in caller_parameters:
                         destination = uses.setdefault(symbol_id, {})
-                    elif caller_name in caller_locals and caller_locals[caller_name].storage == "threadgroup":
+                    elif (
+                        caller_name in caller_locals
+                        and caller_locals[caller_name].storage == "threadgroup"
+                    ):
                         destination = local_uses.setdefault(symbol_id, {})
                     else:
                         continue
@@ -108,21 +120,36 @@ def _validate_atomic_accesses(functions, parameter_uses, local_uses):
     for symbol_id, function in functions.items():
         names = set(parameter_uses.get(symbol_id, {})) | set(local_uses.get(symbol_id, {}))
         for name in names:
-            unsupported = re.search(
-                rf"(?:\*\s*{re.escape(name)}\b\s*\)?|\b{re.escape(name)}\s*\[[^]]+\])\s*"
-                r"(?:\+\+|--|[+\-*/%&|^]=)",
-                function.body,
-            )
+            semantic_non_atomic = {
+                target
+                for statement in function.statements
+                for target in (statement.attributes or {}).get("non_atomic_targets", [])
+            }
+            if semantic_non_atomic:
+                unsupported = name in semantic_non_atomic
+            else:
+                unsupported = re.search(
+                    rf"(?:\*\s*{re.escape(name)}\b\s*\)?|\b{re.escape(name)}\s*\[[^]]+\])\s*"
+                    r"(?:\+\+|--|[+\-*/%&|^]=)",
+                    function.body,
+                )
             if not unsupported:
                 continue
-            diagnostics.append({
-                "code": "InvalidAtomicNonAtomicAccess",
-                "severity": "error",
-                "message": f"Compound non-atomic access to atomic target '{name}' is unsupported; use a CUDA atomic operation.",
-                "file": function.source.file,
-                "line": (function.body_line or function.source.line or 1) + function.body[:unsupported.start()].count("\n"),
-                "column": None,
-            })
+            line = function.source.line
+            if hasattr(unsupported, "start"):
+                line = (function.body_line or function.source.line or 1) + function.body[
+                    : unsupported.start()
+                ].count("\n")
+            diagnostics.append(
+                {
+                    "code": "InvalidAtomicNonAtomicAccess",
+                    "severity": "error",
+                    "message": f"Compound non-atomic access to atomic target '{name}' is unsupported; use a CUDA atomic operation.",
+                    "file": function.source.file,
+                    "line": line,
+                    "column": None,
+                }
+            )
     return diagnostics
 
 

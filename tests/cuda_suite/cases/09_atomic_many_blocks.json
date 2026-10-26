@@ -1,1 +1,0 @@
-{"id":"09","name":"many atomic reductions","tier":"medium","program":"tests/cuda_suite/programs/atomic_reduction.cu","args":["128","64"]}

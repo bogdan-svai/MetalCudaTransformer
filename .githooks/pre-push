@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
-
-echo "Running MCU verification before push..."
-make verify

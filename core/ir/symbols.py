@@ -16,6 +16,18 @@ class SourceLocationIR:
 
 
 @dataclass(frozen=True)
+class SourceRangeIR:
+    """Half-open byte offsets in an original UTF-8 source file."""
+
+    file: str
+    start: int
+    end: int
+
+    def to_dict(self):
+        return {"file": self.file, "start": self.start, "end": self.end}
+
+
+@dataclass(frozen=True)
 class TypeIR:
     spelling: str
     canonical: str
@@ -51,6 +63,12 @@ class CallEdgeIR:
     source: SourceLocationIR
     argument_types: tuple[TypeIR, ...] = tuple()
     argument_symbols: tuple[str | None, ...] = tuple()
+    callee_usr: str | None = None
+    identifier_range: SourceRangeIR | None = None
+    rewrite_issue: str | None = None
+    call_range: SourceRangeIR | None = None
+    intrinsic_declaration: bool = False
+    explicit_argument_count: int | None = None
 
     def to_dict(self):
         return {
@@ -60,6 +78,12 @@ class CallEdgeIR:
             "arguments": list(self.arguments),
             "argument_types": [item.to_dict() for item in self.argument_types],
             "argument_symbols": list(self.argument_symbols),
+            "callee_usr": self.callee_usr,
+            "identifier_range": self.identifier_range.to_dict() if self.identifier_range else None,
+            "rewrite_issue": self.rewrite_issue,
+            "call_range": self.call_range.to_dict() if self.call_range else None,
+            "intrinsic_declaration": self.intrinsic_declaration,
+            "explicit_argument_count": self.explicit_argument_count,
             "source": self.source.to_dict(),
         }
 
@@ -73,6 +97,7 @@ class LocalObjectIR:
     variable_length: bool
     incomplete_array: bool
     source: SourceLocationIR
+    initializer: str = ""
 
     def to_dict(self):
         return {
@@ -83,6 +108,7 @@ class LocalObjectIR:
             "variable_length": self.variable_length,
             "incomplete_array": self.incomplete_array,
             "source": self.source.to_dict(),
+            "initializer": self.initializer,
         }
 
 
@@ -122,6 +148,8 @@ class FunctionSymbolIR:
     local_objects: list[LocalObjectIR] = field(default_factory=list)
     statements: list[StatementIR] = field(default_factory=list)
     effects: dict = field(default_factory=dict)
+    clang_usr: str | None = None
+    body_range: SourceRangeIR | None = None
 
     @property
     def is_device_callable(self):
@@ -137,11 +165,14 @@ class FunctionSymbolIR:
             "parameters": [parameter.to_dict() for parameter in self.parameters],
             "source": self.source.to_dict(),
             "body_line": self.body_line,
+            "body": self.body,
             "translation_unit": self.translation_unit,
             "calls": [call.to_dict() for call in self.calls],
             "local_objects": [item.to_dict() for item in self.local_objects],
             "statements": [item.to_dict() for item in self.statements],
             "effects": self.effects,
+            "clang_usr": self.clang_usr,
+            "body_range": self.body_range.to_dict() if self.body_range else None,
         }
 
 
@@ -196,6 +227,36 @@ class FunctionVariantIR:
         }
 
 
+@dataclass(frozen=True)
+class LaunchIR:
+    kernel: str
+    kernel_id: str | None
+    file: str
+    line: int
+    grid_expr: str
+    block_expr: str
+    shared_expr: str = "0"
+    stream_expr: str = "0"
+    args: tuple[str, ...] = tuple()
+    syntax: str = "cudaLaunch"
+    source_range: SourceRangeIR | None = None
+
+    def to_dict(self):
+        return {
+            "kernel": self.kernel,
+            "kernel_id": self.kernel_id,
+            "file": self.file,
+            "line": self.line,
+            "grid_expr": self.grid_expr,
+            "block_expr": self.block_expr,
+            "shared_expr": self.shared_expr,
+            "stream_expr": self.stream_expr,
+            "args": list(self.args),
+            "syntax": self.syntax,
+            "source_range": self.source_range.to_dict() if self.source_range else None,
+        }
+
+
 @dataclass
 class ProjectSymbolIR:
     frontend: str
@@ -203,6 +264,7 @@ class ProjectSymbolIR:
     functions: dict[str, FunctionSymbolIR]
     types: dict[str, TypeDeclarationIR] = field(default_factory=dict)
     macros: dict[str, MacroIR] = field(default_factory=dict)
+    launches: list[LaunchIR] = field(default_factory=list)
     diagnostics: list[dict] = field(default_factory=list)
     _name_index: dict[str, list[FunctionSymbolIR]] | None = field(
         default=None, init=False, repr=False
@@ -228,8 +290,139 @@ class ProjectSymbolIR:
                 name: declaration.to_dict() for name, declaration in sorted(self.types.items())
             },
             "macros": {name: macro.to_dict() for name, macro in sorted(self.macros.items())},
+            "launches": [launch.to_dict() for launch in self.launches],
             "diagnostics": self.diagnostics,
         }
+
+    @classmethod
+    def from_dict(cls, payload):
+        functions = {}
+        for symbol_id, item in payload.get("functions", {}).items():
+            functions[symbol_id] = FunctionSymbolIR(
+                symbol_id=item["symbol_id"],
+                name=item["name"],
+                kind=item["kind"],
+                qualifiers=tuple(item.get("qualifiers", [])),
+                return_type=_type_from_dict(item["return_type"]),
+                parameters=[_parameter_from_dict(value) for value in item.get("parameters", [])],
+                source=_source_from_dict(item["source"]),
+                body_line=item.get("body_line"),
+                body=item.get("body", ""),
+                translation_unit=item.get("translation_unit", ""),
+                calls=[_call_from_dict(value) for value in item.get("calls", [])],
+                local_objects=[_local_from_dict(value) for value in item.get("local_objects", [])],
+                statements=[_statement_from_dict(value) for value in item.get("statements", [])],
+                effects=item.get("effects", {}),
+                clang_usr=item.get("clang_usr"),
+                body_range=_range_from_dict(item.get("body_range")),
+            )
+        types = {
+            name: TypeDeclarationIR(
+                name=item["name"],
+                kind=item["kind"],
+                fields=tuple(_parameter_from_dict(value) for value in item.get("fields", [])),
+                underlying_type=item.get("underlying_type"),
+                source=_source_from_dict(item["source"]),
+            )
+            for name, item in payload.get("types", {}).items()
+        }
+        macros = {
+            name: MacroIR(
+                name=item["name"],
+                parameters=tuple(item.get("parameters", [])),
+                expression=item["expression"],
+                source=_source_from_dict(item["source"]),
+            )
+            for name, item in payload.get("macros", {}).items()
+        }
+        launches = [
+            LaunchIR(
+                kernel=item["kernel"],
+                kernel_id=item.get("kernel_id"),
+                file=item["file"],
+                line=item["line"],
+                grid_expr=item["grid_expr"],
+                block_expr=item["block_expr"],
+                shared_expr=item.get("shared_expr", "0"),
+                stream_expr=item.get("stream_expr", "0"),
+                args=tuple(item.get("args", [])),
+                syntax=item.get("syntax", "cudaLaunch"),
+                source_range=_range_from_dict(item.get("source_range")),
+            )
+            for item in payload.get("launches", [])
+        ]
+        return cls(
+            frontend=payload["frontend"],
+            translation_units=list(payload.get("translation_units", [])),
+            functions=functions,
+            types=types,
+            macros=macros,
+            launches=launches,
+            diagnostics=list(payload.get("diagnostics", [])),
+        )
+
+
+def _range_from_dict(payload):
+    return SourceRangeIR(**payload) if payload is not None else None
+
+
+def _source_from_dict(payload):
+    return SourceLocationIR(payload["file"], payload.get("line"), payload.get("column"))
+
+
+def _type_from_dict(payload):
+    return TypeIR(
+        payload["spelling"],
+        payload["canonical"],
+        payload.get("kind", "value"),
+        payload.get("is_const", False),
+        payload.get("pointer_depth", 0),
+    )
+
+
+def _parameter_from_dict(payload):
+    return ParameterIR(payload["name"], _type_from_dict(payload["type"]))
+
+
+def _call_from_dict(payload):
+    return CallEdgeIR(
+        payload["caller_id"],
+        payload["callee_name"],
+        payload.get("callee_id"),
+        tuple(payload.get("arguments", [])),
+        _source_from_dict(payload["source"]),
+        tuple(_type_from_dict(item) for item in payload.get("argument_types", [])),
+        tuple(payload.get("argument_symbols", [])),
+        payload.get("callee_usr"),
+        _range_from_dict(payload.get("identifier_range")),
+        payload.get("rewrite_issue"),
+        _range_from_dict(payload.get("call_range")),
+        payload.get("intrinsic_declaration", False),
+        payload.get("explicit_argument_count"),
+    )
+
+
+def _local_from_dict(payload):
+    return LocalObjectIR(
+        payload["name"],
+        _type_from_dict(payload["type"]),
+        payload["storage"],
+        payload.get("array_extent"),
+        payload.get("variable_length", False),
+        payload.get("incomplete_array", False),
+        _source_from_dict(payload["source"]),
+        payload.get("initializer", ""),
+    )
+
+
+def _statement_from_dict(payload):
+    return StatementIR(
+        payload["kind"],
+        _source_from_dict(payload["source"]),
+        payload.get("text", ""),
+        tuple(payload.get("children", [])),
+        payload.get("attributes", {}),
+    )
 
 
 def canonical_symbol_id(name, parameter_types):
