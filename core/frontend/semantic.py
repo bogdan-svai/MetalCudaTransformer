@@ -13,8 +13,8 @@ from core.frontend.regex_parser import iter_function_calls, read_text, split_top
 from core.ir.symbols import (
     CallEdgeIR,
     FunctionSymbolIR,
-    LocalObjectIR,
     LaunchIR,
+    LocalObjectIR,
     MacroIR,
     ParameterIR,
     ProjectSymbolIR,
@@ -518,8 +518,8 @@ def _attach_original_calls(functions, source_paths, metadata):
     from core.frontend.source_calls import (
         collect_original_functions,
         direct_call_range,
-        original_call_extent,
         is_intrinsic_declaration,
+        original_call_extent,
     )
 
     originals = collect_original_functions(

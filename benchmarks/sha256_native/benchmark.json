@@ -1,0 +1,8 @@
+{
+  "name": "SHA-256 native Metal specialized upper bound",
+  "kind": "native_reference",
+  "workload": "500000 36-byte candidate hashes",
+  "expected_nonce": 20632,
+  "threads": 524288,
+  "threadgroup_size": 128
+}

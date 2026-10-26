@@ -1,0 +1,1 @@
+{"id":"08","name":"wide 2D geometry","tier":"medium","program":"tests/cuda_suite/programs/geometry_2d.cu","args":["1024","256","32","8"]}

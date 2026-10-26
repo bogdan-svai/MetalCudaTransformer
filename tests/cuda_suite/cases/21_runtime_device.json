@@ -1,0 +1,9 @@
+{
+  "id": "21",
+  "name": "runtime device properties and occupancy",
+  "tier": "easy",
+  "program": "tests/cuda_suite/programs/runtime_api.cu",
+  "args": ["device"],
+  "expected": "status=pass",
+  "timeout_seconds": 30
+}

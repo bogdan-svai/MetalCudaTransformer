@@ -1,0 +1,1 @@
+{"id":"15","name":"hundred batched launches","tier":"hard","program":"examples/multilaunch/main.cu","args":["100"],"expected":"result=100"}

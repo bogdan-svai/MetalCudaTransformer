@@ -1,4 +1,12 @@
 .DS_Store
+/.improvements.md
+/planning/
+AGENTS.md
+/.codex/
+/.agents/
+/.env
+/.env.*
+!/.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -11,4 +19,11 @@ mcu_artifacts.zip
 *.pcm
 *.o
 *.a
+*.log
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+/optimizer-quality-gate.json
+/optimizer-quality-gate.md
 examples/sha256_miner/app/main

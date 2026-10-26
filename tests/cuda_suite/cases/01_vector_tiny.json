@@ -1,0 +1,1 @@
+{"id":"01","name":"tiny vector transform","tier":"easy","program":"tests/cuda_suite/programs/vector_pipeline.cu","args":["32","1","2","1"]}

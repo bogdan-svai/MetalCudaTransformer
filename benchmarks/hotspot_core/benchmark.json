@@ -1,0 +1,15 @@
+{
+  "id": "hotspot_core",
+  "name": "Rodinia HotSpot-derived CUDA Core stencil",
+  "category": "stencil_2d_shared_memory",
+  "source": "main.cu",
+  "default_width": 1024,
+  "default_height": 1024,
+  "default_iterations": 50,
+  "bytes_per_cell_update": 12,
+  "provenance": {
+    "upstream": "https://github.com/yuhc/gpu-rodinia/tree/master/cuda/hotspot",
+    "classification": "derived_compatibility_variant",
+    "official_rodinia_result": false
+  }
+}

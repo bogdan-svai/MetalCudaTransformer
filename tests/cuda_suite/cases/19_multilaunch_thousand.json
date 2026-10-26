@@ -1,0 +1,1 @@
+{"id":"19","name":"thousand batched launches","tier":"stress","program":"examples/multilaunch/main.cu","args":["1000"],"expected":"result=1000","timeout_seconds":60}

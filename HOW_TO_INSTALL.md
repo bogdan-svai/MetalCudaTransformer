@@ -17,7 +17,35 @@ xcrun -sdk macosx metal --version
 
 If Xcode is installed elsewhere, use its actual path in the first command.
 
-## Install MCU
+## Install with one command
+
+With the prerequisites above available:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bogdan-svai/MetalCudaTransformer/master/scripts/bootstrap.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+mcu --help
+```
+
+The bootstrap downloads the repository archive, checks prerequisites and installs
+from `~/.local/share/mcu`. It does not require Git or administrator access for MCU
+itself. It refuses to overwrite an existing source directory. If it already
+exists, run `~/.local/share/mcu/install.sh` again, or select another source directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bogdan-svai/MetalCudaTransformer/master/scripts/bootstrap.sh | MCU_SOURCE_DIR="$HOME/Projects/mcu" bash
+```
+
+For a selected revision, use the same full commit ID for the script and archive:
+
+```bash
+MCU_REF=<full-commit-id>
+curl -fsSL "https://raw.githubusercontent.com/bogdan-svai/MetalCudaTransformer/$MCU_REF/scripts/bootstrap.sh" | MCU_SOURCE_REF="$MCU_REF" bash
+```
+
+Keep the downloaded source directory in place. The command points to it.
+
+## Install from a checkout
 
 Download or clone the source and open a terminal in its directory.
 Check your Python version, then run the installer:
@@ -84,7 +112,7 @@ installed automatically, but the native library must come from the developer too
 
 ## Remove MCU
 
-From the source directory:
+From the source directory, normally `~/.local/share/mcu` for the bootstrap:
 
 ```bash
 ./scripts/uninstall_mcu.sh
